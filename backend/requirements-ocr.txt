@@ -1,0 +1,5 @@
+# Optional image rendering and PaddleOCR provider. Tesseract is an external
+# executable and does not require a Python package.
+-r requirements-knowledge.txt
+pymupdf>=1.26,<2
+paddleocr>=3.0,<4

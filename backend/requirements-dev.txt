@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Test dependencies
+pytest==9.2.0
+# The current Starlette TestClient uses HTTPX2.
+httpx2==2.16.0

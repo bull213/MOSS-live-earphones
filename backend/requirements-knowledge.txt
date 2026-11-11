@@ -1,0 +1,5 @@
+# Optional local document indexing and semantic retrieval (Python 3.13).
+-r requirements.txt
+pypdf==7.0.0
+defusedxml==0.7.1
+sentence-transformers==6.2.0

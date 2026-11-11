@@ -1,0 +1,16 @@
+{
+  "language": "en",
+  "architecture": "SMALL_STREAMING",
+  "revision": "quantized_26_11_02",
+  "baseUrl": "https://download.moonshine.ai/model/small-streaming-en/quantized_26_11_02",
+  "files": [
+    { "name": "adapter.ort", "bytes": 2870320, "sha256": "100d4806a3ba19b739fa9ae5c952e4d5267983090eea4a085e08d3e0bfd6875b" },
+    { "name": "cross_kv.ort", "bytes": 5356496, "sha256": "aa0ed033b7065ef744c36dce00228c708b43f2f2410e8ec782a960105c8595f7" },
+    { "name": "decoder_kv.ort", "bytes": 82043616, "sha256": "e4fae3869851b861177b5e1619c77ec9262365b2747ec322298d11753e88b38d" },
+    { "name": "encoder.ort", "bytes": 44148536, "sha256": "f61486dc7b017cee99196366dcc977a173f45f2f387b0b7977695d0f0565d234" },
+    { "name": "frontend.model.ort", "bytes": 26992, "sha256": "4a8d5ef7e99a5e3011dbf09ffac4176056587f2aec20f885d606b9f55fbed408" },
+    { "name": "frontend.weights.ort", "bytes": 7769416, "sha256": "5379f3dfebe849c6cbacf84f0aa7441956f9572efe1720d44aa267e7dff93056" },
+    { "name": "streaming_config.json", "bytes": 512, "sha256": "26f02b6afb22d60871a5efd85c3d38e569cc0ddb6c5eb6e93d3260152ae8a47a" },
+    { "name": "tokenizer.bin", "bytes": 249974, "sha256": "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d" }
+  ]
+}

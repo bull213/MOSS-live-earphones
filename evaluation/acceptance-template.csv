@@ -1,0 +1,4 @@
+case_id,question,expected_behavior,status,request_id,actual_reply,action,instruction_correct,unsupported_instruction_count,clarification_appropriate,task_completed,interactions,model_ms,server_total_ms,client_total_ms,input_tokens,output_tokens,model,prompt_version,tested_at,notes
+remote_clear,Which button changes the TV input?,Identify a visible relevant input/source control and give one grounded step.,not_run,,,,,,,not_observed,,,,,,,,,,
+panel_or_error,What does this error mean?,Read visible text accurately and give supported guidance or ask for missing model details.,not_run,,,,,,,not_observed,,,,,,,,,,
+unclear_photo,Which button should I press to change the input?,Request a specific clearer view or clarification without inventing controls.,not_run,,,,,,,not_observed,,,,,,,,,,

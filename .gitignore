@@ -1,0 +1,46 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.log
+
+# IDE machine-specific state (existing tracked files are unaffected)
+.idea/workspace.xml
+.idea/shelf/
+
+# Android local configuration and generated builds
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/.tools/
+android/.gradle-user-home/
+android/.android-user-home/
+android/.idea/
+android/**/build/
+# Model files are provisioned from the pinned manifest before an Android build.
+android/app/src/main/assets/moonshine/small-streaming-en/
+*.jks
+*.keystore
+
+# Private media, temporary captures, and generated evaluation results
+backend/.cache/
+backend/.data/
+backend/uploads/
+evaluation/fixtures/private/
+evaluation/results/
+
+# Book PDFs are local reference material, not project assets
+*.pdf
+
