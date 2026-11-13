@@ -144,6 +144,14 @@ Write-Host "  -> Scheduled Task '$taskName' registered successfully." -Foregroun
 Write-Host "  -> Trigger: At system startup (runs before user logon)." -ForegroundColor Green
 Write-Host "  -> User: NT AUTHORITY\SYSTEM (High privileges)." -ForegroundColor Green
 
+# Start the task immediately
+try {
+    Start-ScheduledTask -TaskName $taskName
+    Write-Host "  -> Task '$taskName' started." -ForegroundColor Green
+} catch {
+    Write-Host "  -> Note: Task will start at next reboot or with Start-ScheduledTask." -ForegroundColor Yellow
+}
+
 Write-Host "`n==========================================================" -ForegroundColor Cyan
 Write-Host "Always-On Host Setup Complete!" -ForegroundColor Green
 Write-Host "To start the task now without rebooting, run:" -ForegroundColor White
