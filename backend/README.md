@@ -5,6 +5,11 @@ The backend exposes the OpenAI-compatible photo route, the configured
 WebSocket gateway. The simulated demo route has been removed. Android uses its
 normal assistant by default; Live AI is an explicit mode.
 
+## Architectural Subsystems & Boundaries
+- [Backend Application](./app/README.md): Core FastAPI router, vision gateways (OpenAI, StepFun), MOSS Live WebSocket relay, local knowledge agent, and Google NotebookLM RAG coprocessor.
+  - [Knowledge Library](./app/knowledge/README.md): SQLite FTS5 lexical search, MiniLM vector retrieval, OCR, and StepFun multi-step reasoning.
+  - [NotebookLM Coprocessor](./app/notebooklm/README.md): Google NotebookLM authentication, notebook catalog discovery, and circuit-broken grounded chat.
+
 ## MOSS Live realtime gateway
 
 The Android **Start MOSS Live** control uses a separate foreground-only
@@ -50,8 +55,21 @@ MOSS. Starting MOSS Live attaches a real provider session and may incur
 charges. MOSS sends microphone audio to the cloud while active; closing the
 Android session stops microphone capture and closes the backend upstream
 socket. Do not start a provider session as part of routine build validation.
-The offline backend suite passes 148 tests with one opt-in local-embedding test
+The offline backend suite passes 198 tests with one opt-in local-embedding test
 skipped; no test creates a MOSS session.
+
+## NotebookLM Coprocessor & Collections
+
+The backend includes a dedicated NotebookLM coprocessor ([NotebookLM Subsystem](./app/notebooklm/README.md)) that interfaces directly with Google NotebookLM notebooks:
+
+- **Authentication & Self-Healing**: Tokens are stored under `backend/.data/notebooklm/`. Authentication employs a three-tier recovery model (token validation &rarr; refresh &rarr; headless Chromium recovery) with circuit-breaker protection.
+- **REST Endpoints**:
+  - `GET /v1/notebooklm/status`: Returns `{configured, authenticated, email, reason}`.
+  - `POST /v1/notebooklm/auth/trigger-login`: Initiates headless browser login.
+  - `POST /v1/notebooklm/auth/reset`: Evicts stored session tokens.
+  - `GET /v1/notebooklm/notebooks`: Enumerates accessible user notebooks.
+  - `GET /v1/notebooklm/notebooks/{notebook_id}/history`: Returns historical turns.
+- **Grounded Assistant Turns**: When `notebook_id` is supplied in `POST /v1/assistant/turns`, the backend routes the prompt through the specific notebook, sanitizes citations and markdown for spoken text via `nlp.py`, and returns `[📚 Manual: <title>]` metadata.
 
 ## Windows setup
 

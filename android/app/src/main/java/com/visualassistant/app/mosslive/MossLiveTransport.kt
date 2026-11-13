@@ -30,6 +30,8 @@ internal interface MossLiveTransport {
     fun sendCameraFrame(bytes: ByteArray): Boolean = sendBinary(bytes)
     fun queuedBytes(): Long
     fun close()
+    fun close(code: Int, reason: String) { close() }
+    fun isOpen(): Boolean = true
 }
 
 internal class OkHttpMossLiveTransport(
@@ -70,33 +72,47 @@ internal class OkHttpMossLiveTransport(
         onConnectFailed: () -> Unit,
     ) {
         var opened = false
-        val request = Request.Builder()
-            .url(url)
-            .build()
-        socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                opened = true
-                listener.onOpen()
-            }
+        var retryAttempt = 0
+        val requestBuilder = Request.Builder().url(url)
+        endpoint?.authorizationHeader()?.let {
+            requestBuilder.addHeader("Authorization", it)
+        }
+        val request = requestBuilder.build()
 
-            override fun onMessage(webSocket: WebSocket, text: String) = listener.onText(text)
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) = listener.onBinary(bytes.toByteArray())
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onClosed()
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.w(
-                    "MossLive",
-                    "Realtime transport to $url failed (type=${t.javaClass.simpleName}, http=${response?.code})",
-                )
-                if (!opened) {
-                    onConnectFailed()
-                } else {
-                    listener.onFailure()
+        fun attemptConnect() {
+            socket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    opened = true
+                    listener.onOpen()
                 }
-            }
-        })
+
+                override fun onMessage(webSocket: WebSocket, text: String) = listener.onText(text)
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) = listener.onBinary(bytes.toByteArray())
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = listener.onClosed()
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    Log.w(
+                        "MossLive",
+                        "Realtime transport to $url failed (type=${t.javaClass.simpleName}, http=${response?.code})",
+                    )
+                    if (!opened && retryAttempt < 1 && endpoint?.isRemoteConfigured() == true) {
+                        retryAttempt++
+                        Log.i("MossLive", "Retrying remote WebSocket connection (attempt $retryAttempt)...")
+                        CoroutineScope(Dispatchers.IO).launch {
+                            kotlinx.coroutines.delay(600L)
+                            attemptConnect()
+                        }
+                    } else if (!opened) {
+                        onConnectFailed()
+                    } else {
+                        listener.onFailure()
+                    }
+                }
+            })
+        }
+        attemptConnect()
     }
 
     override fun sendText(text: String): Boolean = socket?.send(text) == true
@@ -116,13 +132,19 @@ internal class OkHttpMossLiveTransport(
     override fun queuedBytes(): Long = socket?.queueSize() ?: 0L
 
     override fun close() {
+        close(1000, "Session ended")
+    }
+
+    override fun close(code: Int, reason: String) {
         connectJob?.cancel()
         connectJob = null
-        socket?.close(1000, "Session ended")
+        socket?.close(code, reason)
         socket = null
         client.dispatcher.cancelAll()
         client.connectionPool.evictAll()
     }
+
+    override fun isOpen(): Boolean = socket != null
 
     private companion object {
         const val DEFAULT_HOST = "127.0.0.1:8000"

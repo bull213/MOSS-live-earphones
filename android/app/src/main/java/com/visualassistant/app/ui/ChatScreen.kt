@@ -80,15 +80,23 @@ internal fun ChatScreen(
     onUseTranscript: (String) -> Unit = {},
     moss: MossLiveUiState = MossLiveUiState(),
     onStartMoss: () -> Unit = {},
+    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
+    speakingMessageId: String? = null,
+    onReplaySpeech: (String, String) -> Unit = { _, _ -> },
+    onExitNotebook: () -> Unit = {},
 ) {
     val list = rememberLazyListState()
-    val messages = if (state.viewingSaved) state.messages else state.recentMessages.ifEmpty { state.messages }
-    val title = if (state.viewingSaved) {
-        state.history.firstOrNull { it.id == state.sessionId }?.title?.takeIf { it.isNotBlank() }
-            ?: stringResource(R.string.history_saved)
-    } else stringResource(R.string.recent_memory_title)
+    val messages = if (state.activeNotebook != null || state.viewingSaved) state.messages else state.recentMessages.ifEmpty { state.messages }
+    val title = when {
+        state.activeNotebook != null -> state.activeNotebook.title
+        state.viewingSaved -> {
+            state.history.firstOrNull { it.id == state.sessionId }?.title?.takeIf { it.isNotBlank() }
+                ?: stringResource(R.string.history_saved)
+        }
+        else -> stringResource(R.string.recent_memory_title)
+    }
     val currentTitle = state.history.firstOrNull { it.id == state.sessionId }?.title?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.history_untitled)
 
@@ -106,19 +114,27 @@ internal fun ChatScreen(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { ChatHeader(state, title, showMenu, onHistory, onSave, actionBusy) },
+        topBar = { ChatHeader(state, title, showMenu, onHistory, onSave, onExitNotebook, actionBusy) },
         bottomBar = { ChatComposer(state, hasPhoto, openingCamera, currentTitle, onDraftChanged, onPhoto, onSend,
             speech, voiceAvailable, microphonePermission, microphoneRequested, onVoice, onVoiceSettings, actionBusy,
             pendingVoice.any { it.status != VoiceSaveStatus.SAVING }, onLiveMode, onAttachPhoto, moss, onStartMoss,
-            onSharePhotoWithMoss, onTakeLivePhoto) },
+            onCancelMoss, onSharePhotoWithMoss, onTakeLivePhoto) },
     ) { insets ->
         ChatTimeline(state, messages, list, insets, openingCamera, storageFailed, onPhoto, onRetryStorage, onLoadEarlier,
-            pendingVoice, onSaveVoice, onDiscardVoice, actionBusy, onUseTranscript)
+            pendingVoice, onSaveVoice, onDiscardVoice, actionBusy, onUseTranscript, speakingMessageId, onReplaySpeech)
     }
 }
 
 @Composable
-private fun ChatHeader(state: ChatUiState, title: String, showMenu: Boolean, onHistory: () -> Unit, onSave: () -> Unit, actionBusy: Boolean) {
+private fun ChatHeader(
+    state: ChatUiState,
+    title: String,
+    showMenu: Boolean,
+    onHistory: () -> Unit,
+    onSave: () -> Unit,
+    onExitNotebook: () -> Unit,
+    actionBusy: Boolean,
+) {
     Surface(color = MaterialTheme.colorScheme.background) {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -128,10 +144,17 @@ private fun ChatHeader(state: ChatUiState, title: String, showMenu: Boolean, onH
             Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                 Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
-                Text(stringResource(if (state.liveMode) R.string.chat_live_short else R.string.chat_normal_short), color = MaterialTheme.colorScheme.primary,
+                val subtitle = when {
+                    state.activeNotebook != null -> "Notebook Chat"
+                    else -> stringResource(R.string.chat_live_short)
+                }
+                Text(subtitle, color = MaterialTheme.colorScheme.primary,
                     style = MaterialTheme.typography.labelLarge)
             }
-            if (!state.saved) {
+            if (state.activeNotebook != null) {
+                TextButton(onClick = onExitNotebook, enabled = !state.sending && !actionBusy,
+                    modifier = Modifier.heightIn(min = 48.dp)) { Text("Exit") }
+            } else if (!state.saved) {
                 TextButton(onClick = onSave, enabled = !state.sending && !state.loading && !actionBusy && state.messages.isNotEmpty(),
                     modifier = Modifier.heightIn(min = 48.dp)) { Text(stringResource(R.string.chat_save)) }
             } else Text(stringResource(R.string.saved_short), style = MaterialTheme.typography.labelLarge)
@@ -151,69 +174,74 @@ private fun ChatComposer(
     onLiveMode: (Boolean) -> Unit, onAttachPhoto: (Boolean) -> Unit,
     moss: MossLiveUiState,
     onStartMoss: () -> Unit,
+    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
 ) {
     val focus = LocalFocusManager.current
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.imePadding().navigationBarsPadding()) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = onStartMoss,
-                    enabled = moss.connection !in setOf(MossConnectionState.STOPPING, MossConnectionState.CONNECTING, MossConnectionState.CONFIGURING),
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) {
-                    Text(stringResource(if (moss.connection in setOf(MossConnectionState.IDLE, MossConnectionState.ERROR))
-                        R.string.moss_start else R.string.moss_stop))
-                }
-                if (moss.connection in setOf(MossConnectionState.LISTENING, MossConnectionState.SPEAKING)) {
+            if (state.activeNotebook == null) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Button(
-                        onClick = onTakeLivePhoto,
-                        modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp),
+                        onClick = onStartMoss,
+                        enabled = moss.connection !in setOf(MossConnectionState.STOPPING, MossConnectionState.CONNECTING, MossConnectionState.CONFIGURING),
+                        modifier = Modifier.heightIn(min = 48.dp),
                     ) {
-                        Text("Take Picture")
+                        Text(stringResource(if (moss.connection in setOf(MossConnectionState.IDLE, MossConnectionState.ERROR))
+                            R.string.moss_start else R.string.moss_stop))
                     }
-                    if (hasPhoto && !moss.cameraSharing) {
+                    if (moss.connection in setOf(MossConnectionState.LISTENING, MossConnectionState.SPEAKING)) {
                         Button(
-                            onClick = onSharePhotoWithMoss,
-                            modifier = Modifier.padding(start = 6.dp).heightIn(min = 48.dp),
+                            onClick = onTakeLivePhoto,
+                            modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp),
                         ) {
-                            Text("Show Photo")
+                            Text("Take Picture")
+                        }
+                        if (hasPhoto && !moss.cameraSharing) {
+                            Button(
+                                onClick = onSharePhotoWithMoss,
+                                modifier = Modifier.padding(start = 6.dp).heightIn(min = 48.dp),
+                            ) {
+                                Text("Show Photo")
+                            }
+                        }
+                    }
+                    Text(
+                        stringResource(when (moss.connection) {
+                            MossConnectionState.IDLE -> R.string.moss_idle
+                            MossConnectionState.CONNECTING -> R.string.moss_connecting
+                            MossConnectionState.CONFIGURING -> R.string.moss_configuring
+                            MossConnectionState.LISTENING -> R.string.moss_listening
+                            MossConnectionState.SPEAKING -> R.string.moss_speaking
+                            MossConnectionState.STOPPING -> R.string.moss_stopping
+                            MossConnectionState.ERROR -> R.string.moss_error_short
+                        }),
+                        modifier = Modifier.padding(start = 12.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                if (moss.cameraSharing) {
+                    StatusText(
+                        if (moss.cameraPaused) "Camera stream paused (retrieval in progress)"
+                        else "Photo streaming to MOSS (camera active)",
+                        isError = false
+                    )
+                }
+                if (moss.microphoneTransmitting) StatusText(stringResource(R.string.moss_microphone_transmitting))
+                if (moss.connection != MossConnectionState.IDLE) {
+                    Text(stringResource(R.string.moss_privacy_disclosure), style = MaterialTheme.typography.labelMedium)
+                }
+                moss.error?.let { StatusText(it, isError = true) }
+                if (hasPhoto) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { onAttachPhoto(!state.attachPhoto) },
+                            enabled = !state.sending && !state.loading && !actionBusy) {
+                            Text(stringResource(if (state.attachPhoto) R.string.chat_photo_attached else R.string.chat_attach_photo))
                         }
                     }
                 }
-                Text(
-                    stringResource(when (moss.connection) {
-                        MossConnectionState.IDLE -> R.string.moss_idle
-                        MossConnectionState.CONNECTING -> R.string.moss_connecting
-                        MossConnectionState.CONFIGURING -> R.string.moss_configuring
-                        MossConnectionState.LISTENING -> R.string.moss_listening
-                        MossConnectionState.SPEAKING -> R.string.moss_speaking
-                        MossConnectionState.STOPPING -> R.string.moss_stopping
-                        MossConnectionState.ERROR -> R.string.moss_error_short
-                    }),
-                    modifier = Modifier.padding(start = 12.dp),
-                    style = MaterialTheme.typography.labelLarge,
-                )
             }
-            if (moss.cameraSharing) {
-                StatusText("Photo streaming to MOSS (camera active)", isError = false)
-            }
-            if (moss.microphoneTransmitting) StatusText(stringResource(R.string.moss_microphone_transmitting))
-            if (moss.connection != MossConnectionState.IDLE) {
-                Text(stringResource(R.string.moss_privacy_disclosure), style = MaterialTheme.typography.labelMedium)
-            }
-            moss.error?.let { StatusText(it, isError = true) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = { onLiveMode(!state.liveMode) }, enabled = !state.sending && !state.loading && !actionBusy) {
-                    Text(stringResource(if (state.liveMode) R.string.chat_switch_chat else R.string.chat_switch_live))
-                }
-                if (state.liveMode && hasPhoto) TextButton(onClick = { onAttachPhoto(!state.attachPhoto) },
-                    enabled = !state.sending && !state.loading && !actionBusy) {
-                    Text(stringResource(if (state.attachPhoto) R.string.chat_photo_attached else R.string.chat_attach_photo))
-                }
-            }
-            if (state.liveMode) Text(stringResource(R.string.chat_live_disclosure), style = MaterialTheme.typography.labelMedium)
             Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(24.dp),
                 tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -271,6 +299,8 @@ private fun ChatTimeline(
     pendingVoice: List<PendingVoiceText>, onSaveVoice: (String) -> Unit, onDiscardVoice: (String) -> Unit,
     actionBusy: Boolean,
     onUseTranscript: (String) -> Unit,
+    speakingMessageId: String? = null,
+    onReplaySpeech: (String, String) -> Unit = { _, _ -> },
 ) {
     val existingIds = messages.map { it.id }.toSet()
     val pending = pendingVoice.filter { it.text.id !in existingIds &&
@@ -317,7 +347,14 @@ private fun ChatTimeline(
                         .semantics { heading() }, style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                ChatBubble(message, onPhoto, !state.sending && !state.loading && !openingCamera && !actionBusy, onUseTranscript)
+                ChatBubble(
+                    message = message,
+                    onPhoto = onPhoto,
+                    actionsEnabled = !state.sending && !state.loading && !openingCamera && !actionBusy,
+                    onUseTranscript = onUseTranscript,
+                    isSpeaking = speakingMessageId == message.id,
+                    onReplaySpeech = onReplaySpeech,
+                )
             }
         }
         items(pending, key = { it.text.id }) { pendingText ->

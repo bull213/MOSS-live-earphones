@@ -83,7 +83,14 @@ private fun VoiceTranscriptSurface(content: @Composable () -> Unit) {
 }
 
 @Composable
-internal fun ChatBubble(message: ChatMessage, onPhoto: () -> Unit, actionsEnabled: Boolean, onUseTranscript: (String) -> Unit = {}) {
+internal fun ChatBubble(
+    message: ChatMessage,
+    onPhoto: () -> Unit,
+    actionsEnabled: Boolean,
+    onUseTranscript: (String) -> Unit = {},
+    isSpeaking: Boolean = false,
+    onReplaySpeech: (String, String) -> Unit = { _, _ -> },
+) {
     val user = message.source == ChatSource.PHONE || message.source == ChatSource.EARPHONES
     val time = remember(message.timestamp) {
         DateTimeFormatter.ofPattern("HH:mm").format(message.timestamp.atZone(ZoneId.systemDefault()))
@@ -91,7 +98,8 @@ internal fun ChatBubble(message: ChatMessage, onPhoto: () -> Unit, actionsEnable
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (user) Arrangement.End else Arrangement.Start) {
         Surface(color = if (user) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background,
             shape = RoundedCornerShape(22.dp), tonalElevation = 0.dp,
-            modifier = Modifier.fillMaxWidth(if (user) .86f else 1f)) {
+            modifier = Modifier.fillMaxWidth(if (user) .86f else 1f)
+                .then(if (isSpeaking) Modifier.clickable { onReplaySpeech(message.id, message.text) } else Modifier)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val label = when (message.kind) {
                     ChatKind.VOICE_TRANSCRIPT -> R.string.chat_voice_transcript
@@ -103,12 +111,16 @@ internal fun ChatBubble(message: ChatMessage, onPhoto: () -> Unit, actionsEnable
                 Text("${stringResource(label)}  ·  $time", style = MaterialTheme.typography.labelLarge,
                     color = if (user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.Bold)
+                if (!message.notebookTitle.isNullOrBlank()) {
+                    NotebookManualBadge(title = message.notebookTitle)
+                }
                 when (message.status) {
                     ChatStatus.SENDING -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
                         CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                        Text(stringResource(if (message.kind == ChatKind.PHOTO) R.string.chat_preparing_photo else R.string.chat_sending),
-                            style = MaterialTheme.typography.bodyMedium)
+                        val sendingText = if (!message.notebookTitle.isNullOrBlank()) "Consulting ${message.notebookTitle}…"
+                            else stringResource(if (message.kind == ChatKind.PHOTO) R.string.chat_preparing_photo else R.string.chat_sending)
+                        Text(sendingText, style = MaterialTheme.typography.bodyMedium)
                     }
                     ChatStatus.FAILED -> StatusText(stringResource(if (message.kind == ChatKind.PHOTO) R.string.chat_photo_failed else R.string.chat_send_failed), isError = true)
                     ChatStatus.PARTIAL -> {
@@ -121,6 +133,13 @@ internal fun ChatBubble(message: ChatMessage, onPhoto: () -> Unit, actionsEnable
                             color = if (user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface)
                         if (message.kind == ChatKind.VOICE_TRANSCRIPT) TextButton(onClick = { onUseTranscript(message.text) }, enabled = actionsEnabled) {
                             Text(stringResource(R.string.chat_use_transcript))
+                        }
+                        if (message.kind == ChatKind.ASSISTANT && message.text.isNotBlank()) {
+                            SpeechReadoutButton(
+                                isSpeaking = isSpeaking,
+                                enabled = actionsEnabled,
+                                onClick = { onReplaySpeech(message.id, message.text) },
+                            )
                         }
                         message.actions.forEach { action ->
                             when (action) {
@@ -173,3 +192,44 @@ private fun ChatPhoto(bytes: ByteArray?, photo: CapturedPhoto?) {
 }
 
 private data class PhotoPreview(val bytes: ByteArray? = null, val loading: Boolean = false)
+
+@Composable
+private fun NotebookManualBadge(title: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("📚", style = MaterialTheme.typography.labelSmall)
+            Text(
+                text = stringResource(R.string.chat_manual_badge, title),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SpeechReadoutButton(
+    isSpeaking: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+    ) {
+        val label = if (isSpeaking) {
+            "⏹ " + stringResource(R.string.chat_stop_reading)
+        } else {
+            "🔊 " + stringResource(R.string.chat_read_aloud)
+        }
+        Text(label)
+    }
+}

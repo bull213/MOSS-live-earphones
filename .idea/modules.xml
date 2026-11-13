@@ -3,7 +3,9 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/caveman-middleware.iml" filepath="$PROJECT_DIR$/.idea/caveman-middleware.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/caveman-middleware@1.iml" filepath="$PROJECT_DIR$/.idea/caveman-middleware@1.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/caveman-sdk.iml" filepath="$PROJECT_DIR$/.idea/caveman-sdk.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/caveman-sdk@1.iml" filepath="$PROJECT_DIR$/.idea/caveman-sdk@1.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/earphone-LIT.iml" filepath="$PROJECT_DIR$/.idea/earphone-LIT.iml" />
     </modules>
   </component>

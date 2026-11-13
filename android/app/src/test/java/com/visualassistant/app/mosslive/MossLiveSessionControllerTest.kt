@@ -258,6 +258,180 @@ class MossLiveSessionControllerTest {
         runCurrent()
     }
 
+    @Test
+    fun pausesCameraStreamingOnDownlinkPauseEventAndResumesOnResumeEvent() = runTest {
+        val transport = RecordingTransport()
+        val controller = MossLiveSessionController(
+            transport, NoopRealtimeAudioSource, audioOutputFactory = { _, _, _ -> RecordingAudioOutput() },
+        )
+        controller.start(backgroundScope, "conversation-1", MossSessionContext(photos = listOf(byteArrayOf(10, 20))))
+        val listener = requireNotNull(transport.listener)
+        listener.onOpen()
+        listener.onText(event("session_attached", """{"session_id":"s1"}"""))
+        listener.onText(event("session.updated", """{"error":""}"""))
+        runCurrent()
+
+        assertTrue(controller.state.value.cameraSharing)
+        assertFalse(controller.state.value.cameraPaused)
+        val initialCameraFrames = transport.binary.count { it.firstOrNull() == 0x01.toByte() }
+        assertEquals(1, initialCameraFrames)
+
+        // Advance 1500ms to allow a periodic stream frame
+        advanceTimeBy(1500)
+        runCurrent()
+        val streamFramesBeforePause = transport.binary.count { it.firstOrNull() == 0x01.toByte() }
+        assertTrue(streamFramesBeforePause > initialCameraFrames)
+
+        // Backend signals video.stream_pause during retrieval
+        listener.onText(event("video.stream_pause", "{}"))
+        runCurrent()
+        assertTrue(controller.state.value.cameraPaused)
+
+        // Advance 3000ms while paused; no new camera frames should be sent
+        advanceTimeBy(3000)
+        runCurrent()
+        val streamFramesDuringPause = transport.binary.count { it.firstOrNull() == 0x01.toByte() }
+        assertEquals(streamFramesBeforePause, streamFramesDuringPause)
+
+        // Backend signals video.stream_resume
+        listener.onText(event("video.stream_resume", "{}"))
+        runCurrent()
+        assertFalse(controller.state.value.cameraPaused)
+        val streamFramesAfterResume = transport.binary.count { it.firstOrNull() == 0x01.toByte() }
+        assertTrue(streamFramesAfterResume > streamFramesDuringPause)
+
+        controller.stop()
+        runCurrent()
+    }
+
+    @Test
+    fun cancelActiveTurnDispatchesUpstreamCancelAndStopsActivePlayback() = runTest {
+        val transport = RecordingTransport()
+        val audioOutput = RecordingAudioOutput()
+        val controller = MossLiveSessionController(
+            transport, NoopRealtimeAudioSource, audioOutputFactory = { _, _, _ -> audioOutput },
+        )
+        controller.start(backgroundScope, "conversation-1")
+        val listener = requireNotNull(transport.listener)
+        listener.onOpen()
+        listener.onText(event("session_attached", """{"session_id":"s1"}"""))
+        listener.onText(event("session.updated", """{"error":""}"""))
+        runCurrent()
+
+        val response = MossAudioContext("run-1", "turn-1", "chunk-1")
+        listener.onText(event("response.audio.started", responseData(response)))
+        runCurrent()
+        assertEquals(MossConnectionState.SPEAKING, controller.state.value.connection)
+
+        controller.cancelActiveTurn()
+        runCurrent()
+
+        assertTrue(transport.controls.any { JSONObject(it).optString("action") == "response.cancel" })
+        assertEquals(MossConnectionState.LISTENING, controller.state.value.connection)
+
+        controller.stop()
+        runCurrent()
+    }
+
+    @Test
+    fun testSuspendAudioDispatchesMicAndVideoStateFalse() = runTest {
+        val transport = RecordingTransport()
+        val controller = MossLiveSessionController(
+            transport, NoopRealtimeAudioSource, audioOutputFactory = { _, _, _ -> RecordingAudioOutput() },
+        )
+        controller.start(backgroundScope, "conv-suspend")
+        val listener = requireNotNull(transport.listener)
+        listener.onOpen()
+        listener.onText(event("session_attached", """{"session_id":"s1"}"""))
+        listener.onText(event("session.updated", """{"error":""}"""))
+        runCurrent()
+
+        assertTrue(controller.state.value.microphoneTransmitting)
+        assertFalse(controller.isSuspended)
+
+        controller.suspendAudio()
+        runCurrent()
+
+        assertTrue(controller.isSuspended)
+        assertFalse(controller.state.value.microphoneTransmitting)
+        val actions = transport.controls.map { JSONObject(it).optString("action") }
+        assertTrue(actions.contains("mic_state"))
+        assertTrue(actions.contains("video.state"))
+
+        controller.resumeAudio()
+        runCurrent()
+
+        assertFalse(controller.isSuspended)
+        assertTrue(controller.state.value.microphoneTransmitting)
+        controller.stop()
+    }
+
+    @Test
+    fun testInterimTranscriptEmitsToTranscriptUpdates() = runTest {
+        val transport = RecordingTransport()
+        val controller = MossLiveSessionController(
+            transport, NoopRealtimeAudioSource, audioOutputFactory = { _, _, _ -> RecordingAudioOutput() },
+        )
+        val updates = mutableListOf<MossTranscriptUpdate>()
+        backgroundScope.launch {
+            controller.transcriptUpdates.collect { updates += it }
+        }
+
+        controller.start(backgroundScope, "conv-interim")
+        val listener = requireNotNull(transport.listener)
+        listener.onOpen()
+        listener.onText(event("session_attached", """{"session_id":"s1"}"""))
+        listener.onText(event("session.updated", """{"error":""}"""))
+        runCurrent()
+
+        listener.onText(event("input.transcript.updated", """{"turn":"t1","text":"use notebook Neuro"}"""))
+        runCurrent()
+
+        assertEquals(1, updates.size)
+        assertEquals("use notebook Neuro", updates[0].text)
+        assertFalse(updates[0].final)
+
+        listener.onText(event("input.transcript.done", """{"turn":"t1","text":"use notebook Neuroscience"}"""))
+        runCurrent()
+
+        assertEquals(2, updates.size)
+        assertEquals("use notebook Neuroscience", updates[1].text)
+        assertTrue(updates[1].final)
+        controller.stop()
+    }
+
+    @Test
+    fun testWatchdogTimeoutClosesTransportAt60Seconds() = runTest {
+        val transport = RecordingTransport()
+        val controller = MossLiveSessionController(
+            transport, NoopRealtimeAudioSource, audioOutputFactory = { _, _, _ -> RecordingAudioOutput() },
+        )
+        controller.start(backgroundScope, "conv-watchdog")
+        val listener = requireNotNull(transport.listener)
+        listener.onOpen()
+        listener.onText(event("session_attached", """{"session_id":"s1"}"""))
+        listener.onText(event("session.updated", """{"error":""}"""))
+        runCurrent()
+
+        controller.suspendAudio()
+        runCurrent()
+        assertTrue(controller.isSuspended)
+
+        // Advance 59 seconds: socket remains open
+        advanceTimeBy(59_000L)
+        runCurrent()
+        assertTrue(controller.isSuspended)
+        assertEquals(null, transport.closedWithCode)
+
+        // Advance past 60 seconds: watchdog fires and closes socket
+        advanceTimeBy(2_000L)
+        runCurrent()
+        assertEquals(1000, transport.closedWithCode)
+        assertEquals("quiescent_timeout", transport.closedWithReason)
+        assertFalse(controller.isSuspended)
+        assertEquals(MossConnectionState.IDLE, controller.state.value.connection)
+    }
+
     private fun event(action: String, data: String) = """{"action":"$action","data":$data}"""
     private fun playbackActions(transport: RecordingTransport) = transport.controls.mapNotNull {
         JSONObject(it).optString("action").takeIf { action ->
@@ -273,11 +447,17 @@ class MossLiveSessionControllerTest {
         var listener: MossLiveTransportListener? = null
         val controls = mutableListOf<String>()
         val binary = mutableListOf<ByteArray>()
+        var closedWithCode: Int? = null
+        var closedWithReason: String? = null
         override fun connect(listener: MossLiveTransportListener) { this.listener = listener }
         override fun sendText(text: String): Boolean { controls += text; return true }
         override fun sendBinary(bytes: ByteArray): Boolean { binary += bytes; return true }
         override fun queuedBytes() = 0L
-        override fun close() = Unit
+        override fun close() { close(1000, "Session ended") }
+        override fun close(code: Int, reason: String) {
+            closedWithCode = code
+            closedWithReason = reason
+        }
     }
 
     private class ControllerFakeTrack : MossPlaybackTrack {

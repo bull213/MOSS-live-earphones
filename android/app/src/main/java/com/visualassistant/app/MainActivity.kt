@@ -20,20 +20,28 @@ import com.visualassistant.app.mosslive.OkHttpMossLiveTransport
 import com.visualassistant.app.mosslive.PhoneRealtimeAudioSource
 import com.visualassistant.app.network.AppWakeTrigger
 import com.visualassistant.app.network.BackendEndpoint
+import com.visualassistant.app.network.NotebookAuthApi
 import com.visualassistant.app.ui.ChatRoute
 import com.visualassistant.app.ui.VisualAssistantTheme
 import com.visualassistant.app.voice.MoonshineModelInstaller
+import com.visualassistant.app.voice.PhoneAudioCaptureRouter
 import com.visualassistant.app.voice.PhoneAudioSource
 import com.visualassistant.app.voice.SpeechController
+import com.visualassistant.app.voice.AndroidTextToSpeechSpeaker
+import com.visualassistant.app.voice.ToneEarconPlayer
 import kotlinx.coroutines.launch
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+    private var audioCaptureRouter: PhoneAudioCaptureRouter? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val store = CaptureStore(File(cacheDir, "captures"))
         val endpoint = BackendEndpoint(applicationContext)
+        val router = PhoneAudioCaptureRouter(applicationContext)
+        audioCaptureRouter = router
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = when (modelClass) {
@@ -44,17 +52,21 @@ class MainActivity : ComponentActivity() {
                         File(filesDir, "conversation_photos"), applicationContext.contentResolver),
                     speech = SpeechController(
                         installModel = { MoonshineModelInstaller(applicationContext).ensureInstalled() },
-                        source = PhoneAudioSource(applicationContext),
+                        source = router.asAudioSource(),
                     ),
                     mossLive = MossLiveSessionController(
                         OkHttpMossLiveTransport(endpoint),
-                        PhoneRealtimeAudioSource(applicationContext),
+                        router.asRealtimeAudioSource(),
                         MoonshineReplyTranscriber { MoonshineModelInstaller(applicationContext).ensureInstalled() },
                         applicationContext.getSystemService(android.media.AudioManager::class.java),
                     ),
                     mossPhotoEncoder = AndroidThumbnailProvider(
                         applicationContext.contentResolver, maxLongSide = 512, maxBytes = 512 * 1024,
                     ),
+                    speaker = AndroidTextToSpeechSpeaker(applicationContext),
+                    notebookAuthApi = NotebookAuthApi(endpoint),
+                    earconPlayer = ToneEarconPlayer(),
+                    audioCaptureRouter = router,
                 )
                 else -> throw IllegalArgumentException("Unknown ViewModel")
             } as T
@@ -68,13 +80,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        audioCaptureRouter?.release()
+    }
+
     override fun onStart() {
         super.onStart()
         lifecycleScope.launch {
-            val serverIp = AppWakeTrigger.sendWakeSignal()
-            if (serverIp != null) {
-                val endpoint = BackendEndpoint(applicationContext)
-                endpoint.host = "$serverIp:8000"
+            val endpoint = BackendEndpoint(applicationContext)
+            // When an always-on remote server (e.g. Tailscale) is configured, bypass local wake signal
+            if (!endpoint.isRemoteConfigured()) {
+                val serverIp = AppWakeTrigger.sendWakeSignal()
+                if (serverIp != null) {
+                    endpoint.host = "$serverIp:8000"
+                }
             }
         }
     }

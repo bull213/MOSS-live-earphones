@@ -1,6 +1,7 @@
 """Request correlation and bounded reads before multipart files are created."""
 
 import logging
+import secrets
 from time import perf_counter
 from uuid import uuid4
 
@@ -38,6 +39,22 @@ class RequestMiddleware:
             await send(message)
 
         try:
+            # Bearer token verification if api_bearer_token is configured
+            path = scope.get("path", "").rstrip("/")
+            method = scope.get("method", "")
+            if path != "/health" and method != "OPTIONS":
+                app = scope.get("app")
+                state_obj = getattr(app, "state", None)
+                settings = getattr(state_obj, "settings", None) if state_obj else None
+                if settings is not None and getattr(settings, "api_bearer_token", None) is not None:
+                    expected = settings.api_bearer_token.get_secret_value()
+                    if expected:
+                        headers = Headers(scope=scope)
+                        auth_header = headers.get("authorization", "")
+                        scheme, _, param = auth_header.partition(" ")
+                        if scheme.lower() != "bearer" or not secrets.compare_digest(param.strip(), expected):
+                            raise AssistantError(401, "unauthorized", "Valid Bearer token required.")
+
             if scope["method"] == "POST" and scope["path"].rstrip("/") in {"/v1/turns", "/v1/assistant/turns"}:
                 headers = Headers(scope=scope)
                 if headers.get("content-type", "").split(";", 1)[0].strip().lower() != "multipart/form-data":

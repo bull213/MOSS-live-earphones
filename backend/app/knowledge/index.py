@@ -127,6 +127,12 @@ class KnowledgeIndex:
                 connection.execute("ALTER TABLE documents ADD COLUMN warnings TEXT NOT NULL DEFAULT '[]'")
             if "extraction_metadata" not in columns:
                 connection.execute("ALTER TABLE documents ADD COLUMN extraction_metadata TEXT NOT NULL DEFAULT '{}'")
+            if "notebooklm_id" not in columns:
+                connection.execute("ALTER TABLE documents ADD COLUMN notebooklm_id TEXT DEFAULT NULL")
+            if "notebooklm_status" not in columns:
+                connection.execute("ALTER TABLE documents ADD COLUMN notebooklm_status TEXT NOT NULL DEFAULT 'NONE'")
+            if "privacy_tier" not in columns:
+                connection.execute("ALTER TABLE documents ADD COLUMN privacy_tier TEXT NOT NULL DEFAULT 'TIER_1_PUBLIC'")
             section_columns = {row[1] for row in connection.execute("PRAGMA table_info(sections)")}
             if "provenance" not in section_columns:
                 connection.execute("ALTER TABLE sections ADD COLUMN provenance TEXT NOT NULL DEFAULT '{}'")
@@ -188,11 +194,33 @@ class KnowledgeIndex:
 
     def list_documents(self) -> list[dict]:
         with self._connect() as db:
-            result = [dict(row) for row in db.execute("SELECT id,title,author,content_hash,index_version,embedding_version,contextual,warnings,extraction_metadata FROM documents ORDER BY title")]
+            result = [dict(row) for row in db.execute(
+                "SELECT id,title,author,content_hash,index_version,embedding_version,contextual,warnings,extraction_metadata,"
+                "notebooklm_id,notebooklm_status,privacy_tier FROM documents ORDER BY title"
+            )]
             for row in result:
                 row["warnings"] = json.loads(row["warnings"])
                 row["extraction_metadata"] = json.loads(row["extraction_metadata"])
             return result
+
+    def update_notebooklm_metadata(self, document_id: str, *, notebooklm_id: str | None = None,
+                                  notebooklm_status: str | None = None, privacy_tier: str | None = None) -> bool:
+        updates = []
+        params = []
+        if notebooklm_id is not None:
+            updates.append("notebooklm_id = ?")
+            params.append(notebooklm_id)
+        if notebooklm_status is not None:
+            updates.append("notebooklm_status = ?")
+            params.append(notebooklm_status)
+        if privacy_tier is not None:
+            updates.append("privacy_tier = ?")
+            params.append(privacy_tier)
+        if not updates:
+            return False
+        params.append(document_id)
+        with self._connect() as db:
+            return db.execute(f"UPDATE documents SET {', '.join(updates)} WHERE id = ?", params).rowcount > 0
 
     def remove(self, document_id: str) -> bool:
         with self._connect() as db:

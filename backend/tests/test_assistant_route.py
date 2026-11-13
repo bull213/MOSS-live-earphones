@@ -54,13 +54,48 @@ def test_selected_provider_is_not_silently_replaced():
     assert result.json()["error"]["code"] == "ai_not_configured"
 
 
-def test_openai_text_only_returns_explicit_error():
-    app = create_app(Settings(_env_file=None, openai_api_key=None))
-    app.dependency_overrides[get_gateway] = lambda: object()
+def test_openai_text_only_succeeds_with_history():
+    app = create_app(Settings(_env_file=None, assistant_provider="openai", openai_api_key="test-key"))
+    gateway = AsyncMock()
+    gateway.answer.return_value = VisionResult(
+        answer=AssistantReply(reply="Yes, you can buy detergent online.", action="answer"),
+        model_ms=50,
+    )
+    app.dependency_overrides[get_gateway] = lambda: gateway
     with TestClient(app) as client:
-        result = client.post("/v1/assistant/turns", files={"question": (None, "Hello")})
-    assert result.status_code == 503
-    assert result.json()["error"]["code"] == "text_provider_unavailable"
+        result = client.post(
+            "/v1/assistant/turns",
+            files={
+                "question": (None, "Where can I buy detergent?"),
+                "history_json": (None, '[{"role":"user","text":"Hello","photo_id":"550e8400-e29b-41d4-a716-446655440000"}]'),
+            },
+        )
+    assert result.status_code == 200
+    assert result.json()["reply"] == "Yes, you can buy detergent online."
+    gateway.answer.assert_awaited_once()
+
+
+def test_photo_turn_stores_image_in_photo_cache(jpeg_bytes):
+    app = create_app(Settings(_env_file=None, assistant_provider="openai", openai_api_key="test-key"))
+    gateway = AsyncMock()
+    gateway.answer.return_value = VisionResult(
+        answer=AssistantReply(reply="I see a machine.", action="answer"),
+        model_ms=50,
+    )
+    app.dependency_overrides[get_gateway] = lambda: gateway
+    photo_id = "550e8400-e29b-41d4-a716-446655440000"
+    with TestClient(app) as client:
+        result = client.post(
+            "/v1/assistant/turns",
+            files={
+                "question": (None, "What is this?"),
+                "photo_id": (None, photo_id),
+                "image": ("photo.jpg", jpeg_bytes, "image/jpeg"),
+            },
+        )
+    assert result.status_code == 200
+    cache = app.state.photo_cache
+    assert cache.get_photo(photo_id) is not None
 
 
 def test_history_is_bounded_and_forbids_system_messages(tmp_path):

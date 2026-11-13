@@ -44,6 +44,7 @@ data class MessageEntity(
     val status: String,
     val imageKey: String? = null,
     val captureId: String? = null,
+    val notebookTitle: String? = null,
 )
 
 data class ConversationSummaryRow(
@@ -116,8 +117,8 @@ interface ConversationDao {
     @Query("UPDATE conversations SET lastActivity = :time, title = :title WHERE id = :id")
     suspend fun updateConversation(id: String, time: Long, title: String)
 
-    @Query("UPDATE messages SET status = :status, text = :text, timestamp = :time WHERE id = :id")
-    suspend fun updateMessage(id: String, status: String, text: String, time: Long)
+    @Query("UPDATE messages SET status = :status, text = :text, timestamp = :time, notebookTitle = :notebookTitle WHERE id = :id")
+    suspend fun updateMessage(id: String, status: String, text: String, time: Long, notebookTitle: String? = null)
 
     @Query("UPDATE messages SET status = :status, text = :text, timestamp = :time WHERE id = :id")
     suspend fun updateMessageText(id: String, status: String, text: String, time: Long)
@@ -127,9 +128,18 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteConversation(id: String)
+
+    @Query("SELECT m.imageKey FROM messages m JOIN conversations c ON c.id = m.conversationId WHERE c.saved = 0 AND m.imageKey IS NOT NULL")
+    suspend fun recentImages(): List<String>
+
+    @Query("DELETE FROM messages WHERE conversationId IN (SELECT id FROM conversations WHERE saved = 0)")
+    suspend fun deleteRecentMessages()
+
+    @Query("DELETE FROM conversations WHERE saved = 0")
+    suspend fun deleteRecentConversations()
 }
 
-@Database(entities = [ConversationEntity::class, MessageEntity::class], version = 2, exportSchema = false)
+@Database(entities = [ConversationEntity::class, MessageEntity::class], version = 3, exportSchema = false)
 abstract class ConversationDatabase : RoomDatabase() {
     abstract fun conversations(): ConversationDao
 }
@@ -139,7 +149,7 @@ internal object ConversationDatabaseProvider {
 
     fun get(context: Context): ConversationDatabase = instance ?: synchronized(this) {
         instance ?: Room.databaseBuilder(context.applicationContext, ConversationDatabase::class.java, "conversations.db")
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build().also { instance = it }
     }
 }
@@ -148,5 +158,11 @@ internal val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE conversations ADD COLUMN saved INTEGER NOT NULL DEFAULT 1")
         db.execSQL("ALTER TABLE conversations ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+internal val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN notebookTitle TEXT DEFAULT NULL")
     }
 }

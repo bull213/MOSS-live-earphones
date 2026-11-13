@@ -99,10 +99,10 @@ internal class MemoryConversationStore : ConversationStore {
         return current.copy(messages = current.messages + listOfNotNull(image, text, pending), currentPhoto = photo)
             .also { conversations[conversationId] = it }
     }
-    override suspend fun finishTurn(conversationId: String, messageId: String, answer: String?, failed: Boolean): ConversationSnapshot {
+    override suspend fun finishTurn(conversationId: String, messageId: String, answer: String?, failed: Boolean, notebookTitle: String?): ConversationSnapshot {
         val current = conversations.getValue(conversationId)
         return current.copy(messages = current.messages.map {
-            if (it.id == messageId) it.copy(text = answer.orEmpty(), status = if (failed) ChatStatus.FAILED else ChatStatus.READY) else it
+            if (it.id == messageId) it.copy(text = answer.orEmpty(), status = if (failed) ChatStatus.FAILED else ChatStatus.READY, notebookTitle = notebookTitle) else it
         }).also { conversations[conversationId] = it }
     }
     override suspend fun delete(id: String, currentId: String): ConversationSnapshot {
@@ -110,6 +110,17 @@ internal class MemoryConversationStore : ConversationStore {
         val remaining = conversations[currentId] ?: conversations.values.lastOrNull() ?: return newConversation()
         active = remaining.id
         return remaining
+    }
+    override suspend fun clearRecentMemory(currentId: String?, viewingSaved: Boolean): ConversationSnapshot {
+        val unsavedIds = conversations.filterValues { !it.saved }.keys.toList()
+        for (id in unsavedIds) {
+            conversations.remove(id)
+        }
+        if (viewingSaved && currentId != null && conversations.containsKey(currentId)) {
+            active = currentId
+            return conversations.getValue(currentId)
+        }
+        return newConversation()
     }
 }
 
@@ -154,7 +165,7 @@ class PersistentChatViewModelTest {
             override fun isResponseFullyPlayed(responseKey: String) = false
         }
         val moss = MossLiveSessionController(transport, source, audioOutputFactory = { _, _, _ -> output })
-        val model = ChatViewModel({ _, _, _ -> "" }, { byteArrayOf() }, main.dispatcher, store, mossLive = moss)
+        val model = ChatViewModel(LiveAssistant.text { _, _, _ -> "" }, { byteArrayOf() }, main.dispatcher, store, mossLive = moss)
         runCurrent()
 
         moss.start(backgroundScope, conversation.id)
@@ -185,15 +196,14 @@ class PersistentChatViewModelTest {
         val store = MemoryConversationStore()
         var calls = 0
         var sentPhoto: CapturedPhoto? = photo
-        val model = ChatViewModel({ question, image, _ ->
+        val model = ChatViewModel(LiveAssistant.text { question, image, _ ->
                 calls++
                 sentPhoto = image
                 assertEquals("Which button?", question)
                 "Use the input button."
             }, { byteArrayOf(1) }, main.dispatcher, store)
         runCurrent()
-        assertFalse(model.state.value.liveMode)
-        model.setLiveMode(true)
+        assertTrue(model.state.value.liveMode)
         model.useTranscript("Which button?")
         runCurrent()
         assertEquals(0, calls)
@@ -211,7 +221,7 @@ class PersistentChatViewModelTest {
     @Test fun liveFailureRetainsDraftAndSelectedPhotoIsOptional() = runTest(main.dispatcher) {
         val store = MemoryConversationStore()
         var received: CapturedPhoto? = null
-        val model = ChatViewModel({ _, image, _ -> received = image; throw java.io.IOException("private provider detail") },
+        val model = ChatViewModel(LiveAssistant.text { _, image, _ -> received = image; throw java.io.IOException("private provider detail") },
             { byteArrayOf(1) }, main.dispatcher, store)
         runCurrent()
         model.setLiveMode(true)
@@ -230,7 +240,7 @@ class PersistentChatViewModelTest {
         val pending = store.beginTextTurn(previous.id, "Help me set up the television")
         store.finishTurn(previous.id, pending.messages.last().id, "Check the remote input button.", failed = false)
         var receivedContext: List<ChatMessage> = emptyList()
-        val model = ChatViewModel({ _, _, context -> receivedContext = context; "Try the input button." },
+        val model = ChatViewModel(LiveAssistant.text { _, _, context -> receivedContext = context; "Try the input button." },
             { byteArrayOf(1) }, main.dispatcher, store)
         runCurrent()
         model.setLiveMode(true)
@@ -269,7 +279,7 @@ class PersistentChatViewModelTest {
         }
         var assistantCalls = 0
         val speech = SpeechController({ File(".") }, source, { recognizer }, main.dispatcher, main.dispatcher, ::detector)
-        val model = ChatViewModel({ _, _, _ -> assistantCalls++; "Response" }, { byteArrayOf(1) }, main.dispatcher, store, speech)
+        val model = ChatViewModel(LiveAssistant.text { _, _, _ -> assistantCalls++; "Response" }, { byteArrayOf(1) }, main.dispatcher, store, speech)
         runCurrent()
         model.updateDraft("Keep this draft")
         model.startVoice()
@@ -303,7 +313,7 @@ class PersistentChatViewModelTest {
             override fun close() = Unit
         }
         val speech = SpeechController({ File(".") }, source, { recognizer }, main.dispatcher, main.dispatcher, ::detector)
-        val model = ChatViewModel({ _, _, _ -> "Response" }, { byteArrayOf(1) }, main.dispatcher, store, speech)
+        val model = ChatViewModel(LiveAssistant.text { _, _, _ -> "Response" }, { byteArrayOf(1) }, main.dispatcher, store, speech)
         runCurrent()
         model.startVoice()
         runCurrent()
@@ -322,7 +332,7 @@ class PersistentChatViewModelTest {
 
     @Test fun savingConversationKeepsDraftAndMarksItSaved() = runTest(main.dispatcher) {
         val store = MemoryConversationStore()
-        val model = ChatViewModel({ _, _, _ -> "Response" }, { byteArrayOf(1) }, main.dispatcher, store)
+        val model = ChatViewModel(LiveAssistant.text { _, _, _ -> "Response" }, { byteArrayOf(1) }, main.dispatcher, store)
         runCurrent()
         model.updateDraft("First message")
         model.sendTextWithoutPhoto()
@@ -341,7 +351,7 @@ class PersistentChatViewModelTest {
 
     @Test fun restoresConversationsSwitchesAndDeletes() = runTest(main.dispatcher) {
         val store = MemoryConversationStore()
-        fun model() = ChatViewModel({ _, _, _ -> "Real response" }, { byteArrayOf(1) }, main.dispatcher, store)
+        fun model() = ChatViewModel(LiveAssistant.text { _, _, _ -> "Real response" }, { byteArrayOf(1) }, main.dispatcher, store)
         val first = model()
         runCurrent()
         val firstId = first.state.value.sessionId
@@ -367,5 +377,111 @@ class PersistentChatViewModelTest {
         assertEquals(secondId, restarted.state.value.sessionId)
         assertFalse(restarted.state.value.history.any { it.id == firstId })
         assertFalse(store.conversations.containsKey(firstId))
+    }
+
+    @Test fun persistentTurnWithNotebookLmTriggersSpeakerAndPreservesTitle() = runTest(main.dispatcher) {
+        val store = MemoryConversationStore()
+        val speaker = object : com.visualassistant.app.voice.Speaker {
+            var spokenText: String? = null
+            override fun speak(text: String, onStart: () -> Unit, onDone: () -> Unit) {
+                spokenText = text
+                onStart()
+            }
+            override fun stop() {}
+            override fun isSpeaking(): Boolean = spokenText != null
+            override fun shutdown() {}
+        }
+        val assistant = LiveAssistant { _, _, _ ->
+            AssistantTurnResult(
+                reply = "Clean the lint trap before each cycle.",
+                notebookTitle = "Dryer User Manual",
+                readAloud = true,
+                retrievalStatus = "notebooklm",
+            )
+        }
+        val model = ChatViewModel(
+            assistant = assistant,
+            thumbnails = { byteArrayOf(1) },
+            io = main.dispatcher,
+            store = store,
+            speaker = speaker,
+        )
+        runCurrent()
+        model.updateDraft("How do I clean the dryer?")
+        model.sendTextWithoutPhoto()
+        runCurrent()
+
+        val messages = model.state.value.messages
+        val response = messages.last()
+        assertEquals("Clean the lint trap before each cycle.", response.text)
+        assertEquals("Dryer User Manual", response.notebookTitle)
+        assertEquals("Clean the lint trap before each cycle.", speaker.spokenText)
+    }
+
+    @Test fun clearRecentRollingMemoryDeletesUnsavedChatsAndKeepsSavedChats() = runTest(main.dispatcher) {
+        val store = MemoryConversationStore()
+        val conv1 = store.initialize()
+        store.upsertMossTranscript(conv1.id, "turn-1", assistant = false, text = "Unsaved message 1")
+        store.save(conv1.id)
+
+        val conv2 = store.newConversation()
+        store.upsertMossTranscript(conv2.id, "turn-2", assistant = false, text = "Unsaved message 2")
+
+        val model = ChatViewModel(
+            assistant = LiveAssistant { _, _, _ -> AssistantTurnResult("reply") },
+            thumbnails = { byteArrayOf(1) },
+            io = main.dispatcher,
+            store = store,
+        )
+        runCurrent()
+
+        assertEquals(2, store.conversations.size)
+        assertTrue(store.conversations.containsKey(conv1.id))
+        assertTrue(store.conversations.containsKey(conv2.id))
+
+        model.clearRecentRollingMemory()
+        runCurrent()
+
+        // Unsaved conversation is removed, saved conversation is retained
+        assertEquals(2, store.conversations.size) // saved conv1 + freshly created empty recent conv
+        assertTrue(store.conversations.containsKey(conv1.id))
+        assertFalse(store.conversations.containsKey(conv2.id))
+        assertTrue(store.conversations.getValue(conv1.id).saved)
+        assertEquals(0, model.state.value.messages.size)
+        assertFalse(model.state.value.viewingSaved)
+    }
+
+    @Test fun clearRecentRollingMemoryWhileViewingSavedKeepsSavedChatActive() = runTest(main.dispatcher) {
+        val store = MemoryConversationStore()
+        val savedConv = store.initialize()
+        store.upsertMossTranscript(savedConv.id, "turn-saved", assistant = false, text = "Saved message")
+        store.save(savedConv.id)
+
+        val unsavedConv = store.newConversation()
+        store.upsertMossTranscript(unsavedConv.id, "turn-unsaved", assistant = false, text = "Rolling message")
+
+        val model = ChatViewModel(
+            assistant = LiveAssistant { _, _, _ -> AssistantTurnResult("reply") },
+            thumbnails = { byteArrayOf(1) },
+            io = main.dispatcher,
+            store = store,
+        )
+        runCurrent()
+
+        model.openConversation(savedConv.id)
+        runCurrent()
+
+        assertTrue(model.state.value.viewingSaved)
+        assertEquals(savedConv.id, model.state.value.sessionId)
+        assertEquals(1, model.state.value.messages.size)
+
+        model.clearRecentRollingMemory()
+        runCurrent()
+
+        assertTrue(model.state.value.viewingSaved)
+        assertEquals(savedConv.id, model.state.value.sessionId)
+        assertEquals(1, model.state.value.messages.size)
+        assertEquals("Saved message", model.state.value.messages.first().text)
+        assertFalse(store.conversations.containsKey(unsavedConv.id))
     }
 }

@@ -45,4 +45,4 @@ case does not establish multi-step task completion.
 
 The initial live-API acceptance still needs the three cases documented in the
 root README. The larger catalog supports broader evaluation after that gate; it
-does not replace it or make the current simulated demo an AI accuracy test.
+does not replace it or make offline unit testing an AI accuracy test.

@@ -1,6 +1,7 @@
 package com.visualassistant.app.chat
 
 import com.visualassistant.app.camera.CapturedPhoto
+import com.visualassistant.app.network.NotebookItem
 import java.time.Instant
 import java.util.UUID
 
@@ -21,6 +22,8 @@ data class ChatMessage(
     val photo: CapturedPhoto? = null,
     val status: ChatStatus = ChatStatus.READY,
     val actions: List<ChatAction> = emptyList(),
+    val notebookTitle: String? = null,
+    val readAloud: Boolean = false,
 )
 
 data class ConversationSummary(val id: String, val title: String, val preview: String, val lastActivity: Instant, val saved: Boolean = false)
@@ -42,8 +45,11 @@ data class ChatUiState(
     val viewingSaved: Boolean = false,
     val recentDisplayLimited: Boolean = false,
     val recentCanLoadMore: Boolean = false,
-    val liveMode: Boolean = false,
+    val liveMode: Boolean = true,
     val attachPhoto: Boolean = false,
+    val activeNotebook: NotebookItem? = null,
+    val notebooks: List<NotebookItem> = emptyList(),
+    val loadingNotebooks: Boolean = false,
 )
 
 internal data class RecentTimeline(val messages: List<ChatMessage>, val displayLimited: Boolean = false, val canLoadMore: Boolean = false)
@@ -71,6 +77,8 @@ internal interface ConversationStore {
     ): ConversationSnapshot
     suspend fun addVoiceTranscript(conversationId: String, messageId: String, text: String): ConversationSnapshot
     suspend fun discardVoiceTranscript(conversationId: String, messageId: String): ConversationSnapshot
-    suspend fun finishTurn(conversationId: String, messageId: String, answer: String?, failed: Boolean): ConversationSnapshot
+    suspend fun finishTurn(conversationId: String, messageId: String, answer: String?, failed: Boolean, notebookTitle: String? = null): ConversationSnapshot
     suspend fun delete(id: String, currentId: String): ConversationSnapshot
+    suspend fun clearRecentMemory(currentId: String? = null, viewingSaved: Boolean = false): ConversationSnapshot =
+        initialize()
 }

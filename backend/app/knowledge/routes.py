@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 
 from fastapi import APIRouter, Request
@@ -14,6 +13,7 @@ from app.knowledge.book_import_service import (
     MAX_UPLOAD_BYTES,
     PhoneBookImportService,
 )
+from app.security import require_loopback_or_private_subnet
 
 
 router = APIRouter(prefix="/v1/knowledge", tags=["knowledge ingestion"])
@@ -27,13 +27,7 @@ def _service(request: Request) -> PhoneBookImportService:
 
 
 def _require_loopback(request: Request) -> None:
-    host = request.client.host if request.client is not None else ""
-    try:
-        local = ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        local = host == "testclient"
-    if not local:
-        raise AssistantError(403, "local_only", "Book imports are available only through the local computer connection.")
+    require_loopback_or_private_subnet(request, "Book imports are available only through local or private network connections.")
 
 
 def _check_content_length(request: Request, limit: int, code: str, message: str) -> None:

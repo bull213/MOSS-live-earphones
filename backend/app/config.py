@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-6.1-terra"
     moss_api_key: SecretStr | None = None
     moss_model: str = "moss-live-1.0"
+    api_bearer_token: SecretStr | None = None
     assistant_provider: Literal["openai", "stepfun"] = "openai"
     stepfun_api_key: SecretStr | None = None
     stepfun_region: Literal["global", "cn"] = "global"
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     stepfun_model: str = "step-5-preview"
     stepfun_reasoning_effort: Literal["low", "medium", "high"] = "low"
     knowledge_data_dir: Path = BACKEND_DIR / ".data" / "knowledge"
+    notebooklm_data_dir: Path = BACKEND_DIR / ".data" / "notebooklm"
     agent_max_rounds: int = Field(default=3, ge=1, le=5)
     agent_max_tool_calls: int = Field(default=6, ge=1, le=20)
     agent_max_passages: int = Field(default=12, ge=1, le=30)
@@ -44,7 +46,7 @@ class Settings(BaseSettings):
     stepfun_output_usd_per_million: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     stepfun_image_token_reserve: int = Field(default=4096, ge=1, le=100000)
 
-    @field_validator("openai_api_key", "stepfun_api_key", "moss_api_key", mode="before")
+    @field_validator("openai_api_key", "stepfun_api_key", "moss_api_key", "api_bearer_token", mode="before")
     @classmethod
     def allow_empty_key(cls, value: object) -> object:
         if isinstance(value, str):

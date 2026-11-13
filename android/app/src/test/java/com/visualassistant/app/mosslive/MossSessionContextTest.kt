@@ -72,4 +72,23 @@ class MossSessionContextTest {
         assertEquals("2", context.photos[1].decodeToString())
         assertEquals("1", context.photos[2].decodeToString())
     }
+
+    @Test
+    fun fromAudioOnlyExcludesAllPhotosAndVideoPrompts() {
+        val messages = (1..3).map { index ->
+            ChatMessage(id = "p$index", sessionId = "s", turnId = "t$index", kind = ChatKind.PHOTO,
+                source = ChatSource.PHONE, photo = CapturedPhoto("$index", "file://$index", Instant.EPOCH))
+        } + listOf(
+            ChatMessage(sessionId = "s", turnId = "t", kind = ChatKind.TEXT, source = ChatSource.PHONE, text = "Hello audio"),
+        )
+        val context = MossSessionContext.fromAudioOnly(messages)
+
+        // Must have zero photos attached
+        assertTrue(context.photos.isEmpty())
+        // Instructions must not prompt MOSS about camera video stream
+        assertTrue(!context.instructions.contains("live camera video stream"))
+        assertTrue(!context.instructions.contains("camera feed"))
+        // Must still preserve dialogue text history
+        assertTrue(context.instructions.contains("User: Hello audio"))
+    }
 }

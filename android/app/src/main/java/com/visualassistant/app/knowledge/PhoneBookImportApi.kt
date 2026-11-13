@@ -37,6 +37,9 @@ internal class PhoneBookImportApi(
             connection.readTimeout = INSPECT_TIMEOUT_MS
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/pdf")
+            endpoint?.authorizationHeader()?.let {
+                connection.setRequestProperty("Authorization", it)
+            }
             connection.setRequestProperty("X-Document-Name", URLEncoder.encode(name, StandardCharsets.UTF_8.name()))
             connection.setFixedLengthStreamingMode(pdf.length())
             pdf.inputStream().buffered().use { source ->
@@ -70,6 +73,9 @@ internal class PhoneBookImportApi(
             connection.readTimeout = IMPORT_TIMEOUT_MS
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            endpoint?.authorizationHeader()?.let {
+                connection.setRequestProperty("Authorization", it)
+            }
             connection.setFixedLengthStreamingMode(payload.size)
             connection.outputStream.use { it.write(payload) }
             val response = JSONObject(readResponse(connection))

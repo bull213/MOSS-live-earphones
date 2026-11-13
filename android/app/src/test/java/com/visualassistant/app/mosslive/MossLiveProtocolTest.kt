@@ -41,4 +41,10 @@ class MossLiveProtocolTest {
         )?.runId)
         org.junit.Assert.assertNotEquals(first.key, second.key)
     }
+
+    @Test
+    fun cancelResponseProducesValidActionEnvelope() {
+        val payload = org.json.JSONObject(MossLiveProtocol.cancelResponse())
+        assertEquals("response.cancel", payload.getString("action"))
+    }
 }

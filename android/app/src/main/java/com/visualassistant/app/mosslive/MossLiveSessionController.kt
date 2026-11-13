@@ -26,6 +26,7 @@ internal data class MossLiveUiState(
     val connection: MossConnectionState = MossConnectionState.IDLE,
     val microphoneTransmitting: Boolean = false,
     val cameraSharing: Boolean = false,
+    val cameraPaused: Boolean = false,
     val transcripts: List<MossTranscriptLine> = emptyList(),
     val error: String? = null,
 )
@@ -68,19 +69,29 @@ internal class MossLiveSessionController(
     private val replyAudio = MossReplyAudioBuffer(MAX_REPLY_AUDIO_BYTES)
     private var activeCameraFrame: ByteArray? = null
     private var cameraStreamJob: kotlinx.coroutines.Job? = null
+    private val cameraStreamPaused = AtomicBoolean(false)
     private val configured = AtomicBoolean(false)
     private val stopping = AtomicBoolean(false)
     private val diagnosticsLogged = AtomicBoolean(false)
+    private val suspendedState = AtomicBoolean(false)
+    val isSuspended: Boolean get() = suspendedState.get()
+    private var wasCameraActiveBeforeSuspension = false
+    private var quiescentWatchdogJob: kotlinx.coroutines.Job? = null
 
     @Synchronized
     fun start(scope: CoroutineScope, sessionId: String, sessionContext: MossSessionContext = MossSessionContext()) {
         if (mutableState.value.connection !in setOf(MossConnectionState.IDLE, MossConnectionState.ERROR)) return
+        quiescentWatchdogJob?.cancel()
+        quiescentWatchdogJob = null
+        suspendedState.set(false)
+        wasCameraActiveBeforeSuspension = false
         activeScope = scope
         activeSessionId = sessionId
         pendingContext = sessionContext
         cameraStreamJob?.cancel()
         cameraStreamJob = null
         activeCameraFrame = null
+        cameraStreamPaused.set(false)
         configured.set(false)
         stopping.set(false)
         diagnosticsLogged.set(false)
@@ -112,29 +123,44 @@ internal class MossLiveSessionController(
             }
 
             override fun onClosed() {
-                if (!stopping.get()) fail(shutdownInitiator = "backend_socket_closed")
+                if (suspendedState.get()) {
+                    suspendedState.set(false)
+                    mutableState.update { it.copy(connection = MossConnectionState.IDLE, cameraPaused = false) }
+                } else if (!stopping.get()) {
+                    fail(shutdownInitiator = "backend_socket_closed")
+                }
             }
 
             override fun onFailure() {
-                if (!stopping.get()) fail(shutdownInitiator = "backend_socket_failure")
+                if (suspendedState.get()) {
+                    suspendedState.set(false)
+                    mutableState.update { it.copy(connection = MossConnectionState.IDLE, cameraPaused = false) }
+                } else if (!stopping.get()) {
+                    fail(shutdownInitiator = "backend_socket_failure")
+                }
             }
         })
     }
 
     fun stop() {
         if (!stopping.compareAndSet(false, true)) return
+        quiescentWatchdogJob?.cancel()
+        quiescentWatchdogJob = null
+        suspendedState.set(false)
+        wasCameraActiveBeforeSuspension = false
         cameraStreamJob?.cancel()
         cameraStreamJob = null
         activeCameraFrame = null
+        cameraStreamPaused.set(false)
         echoSuppressor.onAssistantInterruptedOrStopped()
         diagnostics.recordShutdown("user_stop")
         activeAssistantResponse?.key?.let(::finishFallbackAudio)
-        mutableState.update { it.copy(connection = MossConnectionState.STOPPING, microphoneTransmitting = false, cameraSharing = false) }
+        mutableState.update { it.copy(connection = MossConnectionState.STOPPING, microphoneTransmitting = false, cameraSharing = false, cameraPaused = false) }
         val scope = activeScope
         if (scope == null) {
             logDiagnosticsOnce()
             transport.close()
-            mutableState.value = mutableState.value.copy(connection = MossConnectionState.IDLE)
+            mutableState.value = mutableState.value.copy(connection = MossConnectionState.IDLE, cameraPaused = false)
             return
         }
         scope.launch {
@@ -157,7 +183,7 @@ internal class MossLiveSessionController(
                 activeSessionId = null
                 pendingContext = MossSessionContext()
                 audioContext = null
-                mutableState.update { it.copy(connection = MossConnectionState.IDLE, microphoneTransmitting = false, cameraSharing = false) }
+                mutableState.update { it.copy(connection = MossConnectionState.IDLE, microphoneTransmitting = false, cameraSharing = false, cameraPaused = false) }
             }
         }
     }
@@ -171,6 +197,74 @@ internal class MossLiveSessionController(
         if (photo != null) {
             val scope = activeScope
             if (scope != null) setCameraPhoto(photo, scope)
+        }
+    }
+
+    /** Cancels the in-flight assistant response turn both locally and upstream. */
+    fun cancelActiveTurn() {
+        if (!configured.get() || stopping.get()) return
+        sendControl(MossLiveProtocol.cancelResponse())
+        activeAssistantResponse?.let { resp ->
+            audioPlayer?.stopResponse(resp.runId, resp.turnId)
+            replyAudio.discard(resp.key)
+            clearAssistantResponse(resp.key)
+        }
+        echoSuppressor.onAssistantInterruptedOrStopped()
+    }
+
+    /** Temporarily suspends audio and video transmission without tearing down the WebSocket connection. */
+    fun suspendAudio() {
+        if (!configured.get() || stopping.get() || suspendedState.get()) return
+        wasCameraActiveBeforeSuspension = mutableState.value.cameraSharing
+        suspendedState.set(true)
+        quiescentWatchdogJob?.cancel()
+        sendControl(MossLiveProtocol.micState(false))
+        sendControl(MossLiveProtocol.videoState(false))
+        audioPlayer?.pause()
+        echoSuppressor.onAssistantInterruptedOrStopped()
+        mutableState.update { it.copy(microphoneTransmitting = false, cameraSharing = false) }
+        val scope = activeScope ?: return
+        quiescentWatchdogJob = scope.launch {
+            kotlinx.coroutines.delay(QUIESCENT_SUSPENSION_TIMEOUT_MS)
+            if (suspendedState.get() && !stopping.get()) {
+                quiescentWatchdogJob = null
+                suspendedState.set(false)
+                transport.close(1000, "quiescent_timeout")
+                mutableState.update { it.copy(connection = MossConnectionState.IDLE, cameraPaused = false) }
+            }
+        }
+    }
+
+    /** Resumes audio transmission on an existing warm suspended session. */
+    fun resumeAudio() {
+        if (!configured.get() || stopping.get()) return
+        quiescentWatchdogJob?.cancel()
+        quiescentWatchdogJob = null
+        suspendedState.set(false)
+        echoSuppressor.reset()
+        sendControl(MossLiveProtocol.micState(true))
+        if (wasCameraActiveBeforeSuspension) {
+            val scope = activeScope
+            val photo = activeCameraFrame
+            if (scope != null && photo != null) {
+                setCameraPhoto(photo, scope)
+            } else {
+                sendControl(MossLiveProtocol.videoState(true))
+                mutableState.update { it.copy(cameraSharing = true) }
+            }
+        }
+        mutableState.update { it.copy(microphoneTransmitting = true, connection = MossConnectionState.LISTENING) }
+    }
+
+    /** Resumes active suspended session or transparently launches a clean reconnection. */
+    fun resumeOrReconnect(scope: CoroutineScope, sessionId: String, sessionContext: MossSessionContext = MossSessionContext()) {
+        if (isSuspended && transport.isOpen() && mutableState.value.connection !in setOf(MossConnectionState.IDLE, MossConnectionState.ERROR)) {
+            resumeAudio()
+        } else {
+            quiescentWatchdogJob?.cancel()
+            quiescentWatchdogJob = null
+            suspendedState.set(false)
+            start(scope, sessionId, sessionContext)
         }
     }
 
@@ -189,6 +283,8 @@ internal class MossLiveSessionController(
         when (action) {
             "session_attached" -> mutableState.update { it.copy(connection = MossConnectionState.CONFIGURING) }
             "session.updated" -> configureAudioSession(data)
+            "video.stream_pause" -> handleVideoStreamPause()
+            "video.stream_resume" -> handleVideoStreamResume()
             "input.transcript.updated" -> updateInputTranscript(data, finalized = false, revised = false)
             "input.transcript.done" -> updateInputTranscript(data, finalized = true, revised = false)
             "input.transcript.revised" -> updateInputTranscript(data, finalized = true, revised = true)
@@ -241,6 +337,8 @@ internal class MossLiveSessionController(
                 }
                 if (pendingContext.photos.isNotEmpty()) {
                     setCameraPhoto(pendingContext.photos.firstOrNull(), scope)
+                } else {
+                    sendControl(MossLiveProtocol.videoState(false))
                 }
                 check(sendControl(MossLiveProtocol.micState(true)))
                 audioSource.start(scope, { pcm ->
@@ -278,11 +376,7 @@ internal class MossLiveSessionController(
             else -> inputTranscriptTracker.updated(text, providerTurn)
         } ?: return
         change.removeTurnId?.let { removeTranscriptState(it, assistant = false) }
-        if (change.finalized) {
-            updateTranscript(data, assistant = false, finalized = true, explicitTurnId = change.turnId)
-        } else {
-            updateTranscriptState(change.turnId, change.text, assistant = false, finalized = false)
-        }
+        updateTranscript(data, assistant = false, finalized = change.finalized, explicitTurnId = change.turnId)
     }
 
     private fun removeTranscriptState(turnId: String, assistant: Boolean) {
@@ -416,6 +510,20 @@ internal class MossLiveSessionController(
         }
     }
 
+    private fun handleVideoStreamPause() {
+        cameraStreamPaused.set(true)
+        mutableState.update { it.copy(cameraPaused = true) }
+    }
+
+    private fun handleVideoStreamResume() {
+        cameraStreamPaused.set(false)
+        mutableState.update { it.copy(cameraPaused = false) }
+        val current = activeCameraFrame
+        if (current != null && configured.get() && !stopping.get()) {
+            transport.sendCameraFrame(MossLiveProtocol.taggedCameraFrame(current))
+        }
+    }
+
     private fun setCameraPhoto(photo: ByteArray?, scope: CoroutineScope) {
         cameraStreamJob?.cancel()
         cameraStreamJob = null
@@ -428,14 +536,14 @@ internal class MossLiveSessionController(
                 while (configured.get() && !stopping.get()) {
                     kotlinx.coroutines.delay(1500)
                     val current = activeCameraFrame ?: break
-                    if (configured.get() && !stopping.get()) {
+                    if (configured.get() && !stopping.get() && !cameraStreamPaused.get()) {
                         transport.sendCameraFrame(MossLiveProtocol.taggedCameraFrame(current))
                     }
                 }
             }
         } else {
             sendControl(MossLiveProtocol.videoState(false))
-            mutableState.update { it.copy(cameraSharing = false) }
+            mutableState.update { it.copy(cameraSharing = false, cameraPaused = false) }
         }
     }
 
@@ -444,14 +552,19 @@ internal class MossLiveSessionController(
         shutdownInitiator: String = "session_failure",
     ) {
         if (stopping.getAndSet(true)) return
+        quiescentWatchdogJob?.cancel()
+        quiescentWatchdogJob = null
+        suspendedState.set(false)
+        wasCameraActiveBeforeSuspension = false
         cameraStreamJob?.cancel()
         cameraStreamJob = null
         activeCameraFrame = null
+        cameraStreamPaused.set(false)
         echoSuppressor.onAssistantInterruptedOrStopped()
         diagnostics.recordShutdown(shutdownInitiator)
         mutableState.update {
             it.copy(connection = MossConnectionState.STOPPING, microphoneTransmitting = false,
-                cameraSharing = false, error = message)
+                cameraSharing = false, cameraPaused = false, error = message)
         }
         activeAssistantResponse?.key?.let(::finishFallbackAudio)
         activeScope?.launch {
@@ -511,5 +624,6 @@ internal class MossLiveSessionController(
         const val MAX_INSTRUCTION_CHARS = 1_900
         const val MAX_TRANSCRIPT_TURNS = 20
         const val MAX_REPLY_AUDIO_BYTES = 6 * 1024 * 1024
+        const val QUIESCENT_SUSPENSION_TIMEOUT_MS = 60_000L
     }
 }

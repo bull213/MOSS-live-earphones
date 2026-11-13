@@ -44,3 +44,7 @@ evaluation/results/
 # Book PDFs are local reference material, not project assets
 *.pdf
 
+# Temporary staging and local export folders
+MOSS-live-earphones-upload/
+
+

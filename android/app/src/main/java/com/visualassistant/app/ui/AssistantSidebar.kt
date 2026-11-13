@@ -16,6 +16,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,10 +33,86 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.visualassistant.app.R
 import com.visualassistant.app.chat.ChatUiState
+import com.visualassistant.app.network.NotebookItem
 
 @Composable
-internal fun AssistantSidebar(state: ChatUiState, busy: Boolean, showingSettings: Boolean, onRecent: () -> Unit, onNew: () -> Unit,
-    onOpen: (String) -> Unit, onDelete: (String) -> Unit, onSettings: () -> Unit, onImportBook: () -> Unit) {
+internal fun AssistantSidebar(
+    state: ChatUiState,
+    busy: Boolean,
+    showingSettings: Boolean,
+    onRecent: () -> Unit,
+    onNew: () -> Unit,
+    onOpen: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onSettings: () -> Unit,
+    onImportBook: () -> Unit,
+    onSelectNotebook: (NotebookItem) -> Unit = {},
+    onLoadNotebooks: () -> Unit = {},
+) {
+    var showingCollections by rememberSaveable { mutableStateOf(false) }
+
+    if (showingCollections) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { showingCollections = false }, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("← Back")
+                    }
+                    Text(
+                        "Collections",
+                        modifier = Modifier.padding(start = 8.dp).semantics { heading() },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            if (state.loadingNotebooks) {
+                item {
+                    Text(
+                        "Loading notebooks…",
+                        Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (state.notebooks.isEmpty()) {
+                item {
+                    Text(
+                        "No connected notebooks found. Connect NotebookLM in Settings.",
+                        Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item {
+                    SidebarAction("Refresh Notebooks", enabled = !busy, onClick = onLoadNotebooks)
+                }
+            } else {
+                items(state.notebooks, key = { it.id }) { notebook ->
+                    SidebarAction(
+                        label = notebook.title,
+                        enabled = !busy,
+                        selected = state.activeNotebook?.id == notebook.id,
+                        onClick = {
+                            onSelectNotebook(notebook)
+                        },
+                    )
+                }
+                item {
+                    SidebarAction("↻ Refresh list", enabled = !busy, onClick = onLoadNotebooks)
+                }
+            }
+        }
+        return
+    }
+
     val saved = state.history.filter { it.saved }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -41,8 +121,20 @@ internal fun AssistantSidebar(state: ChatUiState, busy: Boolean, showingSettings
                 style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
         item { SidebarAction(stringResource(R.string.recent_memory_title), enabled = !busy,
-            selected = !state.viewingSaved && !showingSettings, onClick = onRecent) }
+            selected = !state.viewingSaved && !showingSettings && state.activeNotebook == null, onClick = onRecent) }
         item { SidebarAction(stringResource(R.string.history_new), enabled = !busy, onClick = onNew) }
+        item {
+            val label = if (state.activeNotebook != null) "Collections: ${state.activeNotebook.title}" else "Collections"
+            SidebarAction(
+                label = label,
+                enabled = !busy,
+                selected = state.activeNotebook != null,
+                onClick = {
+                    showingCollections = true
+                    onLoadNotebooks()
+                },
+            )
+        }
         item { SidebarAction(stringResource(R.string.book_import), enabled = !busy, onClick = onImportBook) }
         item {
             Text(stringResource(R.string.history_saved), Modifier.padding(start = 12.dp, top = 18.dp, bottom = 4.dp)

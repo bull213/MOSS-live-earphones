@@ -13,7 +13,7 @@ from openai import (
 )
 from pydantic import ValidationError
 
-from app.assistant import INSTRUCTIONS
+from app.assistant import INSTRUCTIONS, TEXT_INSTRUCTIONS, VISUAL_WITH_HISTORY_INSTRUCTIONS
 from app.config import MAX_OUTPUT_TOKENS, MODEL_TIMEOUT_SECONDS
 from app.errors import AssistantError
 from app.schemas import AssistantReply
@@ -28,7 +28,7 @@ class VisionResult:
 
 
 class VisionGateway(Protocol):
-    async def answer(self, question: str, jpeg: bytes) -> VisionResult: ...
+    async def answer(self, question: str, jpeg: bytes | None = None) -> VisionResult: ...
 
 
 def invalid_response() -> AssistantError:
@@ -48,23 +48,30 @@ class OpenAIVisionGateway:
         self.model = model
         self.timeout_seconds = timeout_seconds
 
-    async def answer(self, question: str, jpeg: bytes) -> VisionResult:
+    async def answer(self, question: str, jpeg: bytes | None = None, *, history: list[dict] | None = None) -> VisionResult:
         started = perf_counter()
         try:
+            instructions = (VISUAL_WITH_HISTORY_INSTRUCTIONS if history else INSTRUCTIONS) if jpeg is not None else TEXT_INSTRUCTIONS
+            user_content: list[dict] = [{"type": "input_text", "text": question}]
+            if jpeg is not None:
+                user_content.append({
+                    "type": "input_image", "detail": "high",
+                    "image_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
+                })
+            input_items: list[dict] = []
+            if history:
+                for item in history:
+                    input_items.append({
+                        "role": item["role"],
+                        "content": [{"type": "input_text", "text": item["text"]}],
+                    })
+            input_items.append({"role": "user", "content": user_content})
+
             async with asyncio.timeout(self.timeout_seconds):
                 response = await self.client.responses.parse(
                     model=self.model,
-                    instructions=INSTRUCTIONS,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": question},
-                            {
-                                "type": "input_image", "detail": "high",
-                                "image_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
-                            },
-                        ],
-                    }],
+                    instructions=instructions,
+                    input=input_items,
                     text_format=AssistantReply,
                     reasoning={"effort": "low"},
                     max_output_tokens=MAX_OUTPUT_TOKENS,

@@ -20,9 +20,10 @@ from app.errors import AssistantError
 from app.knowledge.index import KnowledgeIndex
 from app.knowledge.methods import MethodRegistry
 from app.knowledge.tools import EvidenceLedger, KnowledgeTools, tool_specs
+from app.notebooklm import explicit_notebook_target
 from app.openai_gateway import VisionResult, invalid_response
 from app.prompts import AGENT_INSTRUCTIONS, AGENT_PROMPT_VERSION
-from app.schemas import AppliedMethod, AssistantReply, SourceReference
+from app.schemas import AppliedMethod, AssistantReply, SourceReference, nlm_citations_to_sources
 from app.stepfun_gateway import StepFunGateway, translate_provider_error
 
 
@@ -39,9 +40,11 @@ class GroundedReply(AssistantReply):
 @dataclass
 class AgentResult:
     result: VisionResult
-    retrieval_status: Literal["unused", "used", "incomplete", "no_evidence"] = "unused"
+    retrieval_status: Literal["unused", "used", "incomplete", "no_evidence", "notebooklm"] = "unused"
     sources: list[SourceReference] = field(default_factory=list)
     methods: list[AppliedMethod] = field(default_factory=list)
+    notebook_title: str | None = None
+    read_aloud: bool = False
 
 
 @dataclass
@@ -89,16 +92,46 @@ def explicit_mode(question: str, requested: LibraryMode) -> LibraryMode:
 
 
 class KnowledgeAssistant:
-    def __init__(self, gateway: StepFunGateway, index: KnowledgeIndex, settings: Settings) -> None:
+    def __init__(self, gateway: StepFunGateway, index: KnowledgeIndex, settings: Settings,
+                 notebooklm_service: Any = None, photo_cache: Any = None) -> None:
         self.gateway = gateway
         self.index = index
         self.settings = settings
+        self.notebooklm_service = notebooklm_service
+        self.photo_cache = photo_cache
+
+    @staticmethod
+    def _build_notebooklm_result(nlm_result: Any, doc_id: str, title: str, started: float) -> AgentResult:
+        elapsed_ms = round((perf_counter() - started) * 1000)
+        sources = nlm_citations_to_sources(getattr(nlm_result, "citations", []), doc_id, title)
+        return AgentResult(
+            result=VisionResult(
+                answer=AssistantReply(reply=nlm_result.answer, action="answer"),
+                model_ms=elapsed_ms,
+            ),
+            retrieval_status="notebooklm",
+            sources=sources,
+            notebook_title=title,
+            read_aloud=True,
+        )
 
     async def answer(self, question: str, jpeg: bytes | None, history: list[dict], mode: LibraryMode) -> AgentResult:
         started = perf_counter()
         try:
             async with asyncio.timeout(MODEL_TIMEOUT_SECONDS):
                 selected = explicit_mode(question, mode)
+
+                # Check for explicit NotebookLM target first if service is authenticated
+                if self.notebooklm_service is not None and getattr(self.notebooklm_service, "has_auth", lambda: False)():
+                    target_name, stripped_query = explicit_notebook_target(question)
+                    if target_name:
+                        matched_nb = await self.notebooklm_service.find_notebook(target_name)
+                        if matched_nb:
+                            target_query = stripped_query if stripped_query else question
+                            nlm_result = await self.notebooklm_service.ask_chat(matched_nb["id"], target_query, timeout=45.0)
+                            if nlm_result is not None:
+                                return self._build_notebooklm_result(nlm_result, matched_nb["id"], matched_nb["title"], started)
+
                 if selected == "avoid" or (selected == "auto" and jpeg is not None):
                     return AgentResult(await self.gateway.answer(question, jpeg, history=history))
                 if not self.index.database.is_file():
@@ -112,6 +145,15 @@ class KnowledgeAssistant:
                     return AgentResult(direct, retrieval_status="incomplete")
                 if not docs:
                     return await self._without_evidence(question, jpeg, history, selected)
+
+                # NotebookLM Specialized RAG Delegation
+                if self.notebooklm_service is not None and getattr(self.notebooklm_service, "has_auth", lambda: False)():
+                    candidate = self._evaluate_notebooklm_candidate(docs, passages)
+                    if candidate is not None:
+                        nlm_result = await self.notebooklm_service.ask_chat(candidate["notebooklm_id"], question, timeout=30.0)
+                        if nlm_result is not None:
+                            return self._build_notebooklm_result(nlm_result, candidate["id"], candidate["title"], started)
+
                 relevant = bool(methods) or any(item.similarity >= 0.40 for item in passages)
                 if selected == "auto" and not relevant:
                     return AgentResult(await self.gateway.answer(question, jpeg, history=history))
@@ -120,6 +162,27 @@ class KnowledgeAssistant:
             raise
         except (APIError, TimeoutError) as exc:
             raise translate_provider_error(exc) from None
+
+    def _evaluate_notebooklm_candidate(self, docs: list[dict], passages: list) -> dict | None:
+        if not passages or not docs:
+            return None
+        doc_by_id = {d["id"]: d for d in docs}
+        top_passage = passages[0]
+        if getattr(top_passage, "similarity", 0.0) < 0.70:
+            return None
+        candidate = doc_by_id.get(top_passage.document_id)
+        if not candidate:
+            return None
+        if not candidate.get("notebooklm_id") or candidate.get("notebooklm_status") != "READY":
+            return None
+        if candidate.get("privacy_tier") == "TIER_2_SENSITIVE":
+            return None
+        for other in passages[1:]:
+            if other.document_id != candidate["id"]:
+                if top_passage.similarity - getattr(other, "similarity", 0.0) < 0.15:
+                    return None
+                break
+        return candidate
 
     def _initial_search(self, question: str):
         docs = self.index.list_documents()
@@ -138,7 +201,12 @@ class KnowledgeAssistant:
         settings = self.settings
         usage = RequestUsage.from_settings(settings)
         ledger = EvidenceLedger(max_passages=settings.agent_max_passages, max_tokens=settings.agent_max_retrieval_tokens)
-        tools = KnowledgeTools(self.index, ledger, history)
+        tools = KnowledgeTools(
+            self.index, ledger, history,
+            photo_cache=self.photo_cache,
+            notebooklm_service=self.notebooklm_service,
+            gateway=self.gateway,
+        )
         initial_methods = await asyncio.to_thread(tools._add_methods, methods)
         initial_passages = []
         for passage in passages:
@@ -212,7 +280,7 @@ class KnowledgeAssistant:
                 result = {"error": {"code": "tool_limit", "message": "The tool-call budget is exhausted."}}
                 exceeded = True
             else:
-                result = await asyncio.to_thread(tools.execute, call.function.name, call.function.arguments)
+                result = await tools.execute(call.function.name, call.function.arguments)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result, ensure_ascii=False)})
         return calls_used, exceeded
 
@@ -234,6 +302,43 @@ class KnowledgeAssistant:
         except (ValidationError, ValueError):
             raise invalid_response() from None
         source_ids, method_ids = await self._validate_evidence(answer, ledger)
+
+        if ledger.notebook_title:
+            sources = [
+                SourceReference(
+                    passage_id=item["source_id"],
+                    document_id=item["document_id"],
+                    title=item["title"],
+                    chapter=item.get("cited_text", "")[:50] or None,
+                )
+                for item in ledger.external_sources
+            ]
+            return AgentResult(
+                result=VisionResult(
+                    answer=AssistantReply(reply=answer.reply, action=answer.action),
+                    model_ms=model_ms,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
+                retrieval_status="notebooklm",
+                sources=sources,
+                notebook_title=ledger.notebook_title,
+                read_aloud=True,
+            )
+
+        if getattr(ledger, "photo_inspected", False):
+            return AgentResult(
+                result=VisionResult(
+                    answer=AssistantReply(reply=answer.reply, action=answer.action),
+                    model_ms=model_ms,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
+                retrieval_status="used",
+                sources=[],
+                methods=[],
+            )
+
         if not source_ids:
             return AgentResult(VisionResult(AssistantReply(reply="I could not find enough reliable source material to answer that.", action="clarify"),
                                             model_ms, input_tokens, output_tokens), retrieval_status="no_evidence")
@@ -249,16 +354,25 @@ class KnowledgeAssistant:
     async def _validate_evidence(self, answer: GroundedReply, ledger: EvidenceLedger) -> tuple[list[str], list[str]]:
         source_ids = list(dict.fromkeys(answer.source_ids))
         method_ids = list(dict.fromkeys(answer.method_ids))
-        if any(pid not in ledger.passages for pid in source_ids) or any(mid not in ledger.methods for mid in method_ids):
+
+        # Partition source_ids into local (SQLite) and external (NotebookLM / tool)
+        local_source_ids = [pid for pid in source_ids if not pid.startswith("nlm-")]
+        ext_source_ids = [pid for pid in source_ids if pid.startswith("nlm-")]
+
+        known_ext_ids = {s["source_id"] for s in ledger.external_sources}
+        if any(pid not in known_ext_ids for pid in ext_source_ids):
             raise AssistantError(502, "invalid_evidence", "The assistant returned an unsupported source reference.", retryable=True)
-        if not source_ids:
+
+        if any(pid not in ledger.passages for pid in local_source_ids) or any(mid not in ledger.methods for mid in method_ids):
+            raise AssistantError(502, "invalid_evidence", "The assistant returned an unsupported source reference.", retryable=True)
+        if not local_source_ids:
             return source_ids, method_ids
         for method_id in method_ids:
             record = ledger.methods[method_id]
-            if not set(record["method"]["supporting_passage_ids"]).issubset(source_ids):
+            if not set(record["method"]["supporting_passage_ids"]).issubset(local_source_ids):
                 raise AssistantError(502, "invalid_evidence", "A method was returned without its supporting passages.", retryable=True)
-        current = await asyncio.to_thread(self.index.get_passages, source_ids)
-        if {p.id for p in current} != set(source_ids):
+        current = await asyncio.to_thread(self.index.get_passages, local_source_ids)
+        if {p.id for p in current} != set(local_source_ids):
             raise AssistantError(503, "evidence_changed", "The source changed during the request. Please try again.", retryable=True)
         registry = MethodRegistry(self.index)
         for method_id in method_ids:

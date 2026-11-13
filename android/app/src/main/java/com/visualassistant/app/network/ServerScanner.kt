@@ -41,10 +41,13 @@ internal object ServerScanner {
 
         // Tier 2: Check configured host
         if (!currentHost.isNullOrBlank()) {
-            val cleanHost = stripPort(currentHost)
-            if (cleanHost != "127.0.0.1" && verifyHost(cleanHost, port)) {
-                updateCache(cleanHost)
-                return@withContext cleanHost
+            if (verifyHost(currentHost, port)) {
+                updateCache(currentHost)
+                return@withContext currentHost
+            }
+            // If configured host is an explicit remote address (Tailscale or domain), do NOT waste time scanning local subnets
+            if (isRemoteHost(currentHost)) {
+                return@withContext null
             }
         }
 
@@ -100,14 +103,27 @@ internal object ServerScanner {
 
     /**
      * Verifies that a server is listening and responds with HTTP 200 on /health.
+     * Supports both plain IP:port and full https:// URLs for remote Tailscale/MagicDNS setups.
      */
     fun verifyHost(ipOrHost: String, port: Int = 8000): Boolean {
-        val host = stripPort(ipOrHost)
+        val isSecure = ipOrHost.startsWith("https://", ignoreCase = true) || ipOrHost.startsWith("wss://", ignoreCase = true)
+        val scheme = if (isSecure) "https" else "http"
+        val bare = ipOrHost.removePrefix("http://").removePrefix("https://").removePrefix("ws://").removePrefix("wss://").trimEnd('/')
+        val hostPart = if (bare.contains(":")) bare.substringBefore(":") else bare
+        val effectivePort = if (bare.contains(":")) {
+            bare.substringAfter(":").toIntOrNull() ?: port
+        } else if (isSecure) {
+            443
+        } else {
+            port
+        }
+        val timeoutMs = if (hostPart == "127.0.0.1" || hostPart == "localhost") 250 else 1200
+
         return try {
             Socket().use { socket ->
-                socket.connect(InetSocketAddress(host, port), 250)
+                socket.connect(InetSocketAddress(hostPart, effectivePort), timeoutMs)
             }
-            isHealthOk(host, port)
+            isHealthOkUrl("$scheme://$hostPart:$effectivePort/health", timeoutMs)
         } catch (_: Exception) {
             false
         }
@@ -118,19 +134,19 @@ internal object ServerScanner {
             Socket().use { socket ->
                 socket.connect(InetSocketAddress(ip, port), 200)
             }
-            isHealthOk(ip, port)
+            isHealthOkUrl("http://$ip:$port/health", 600)
         } catch (_: Exception) {
             false
         }
     }
 
-    private fun isHealthOk(ip: String, port: Int): Boolean {
+    private fun isHealthOkUrl(fullUrl: String, timeoutMs: Int = 1200): Boolean {
         var conn: HttpURLConnection? = null
         return try {
-            val url = URL("http://$ip:$port/health")
+            val url = URL(fullUrl)
             conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 600
-            conn.readTimeout = 600
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
             conn.requestMethod = "GET"
             conn.responseCode == 200
         } catch (_: Exception) {
@@ -138,6 +154,19 @@ internal object ServerScanner {
         } finally {
             conn?.disconnect()
         }
+    }
+
+    fun isRemoteHost(host: String): Boolean {
+        val clean = stripPort(host).lowercase()
+        return clean.contains(".ts.net") ||
+                clean.startsWith("100.") ||
+                (clean != "127.0.0.1" && clean != "localhost" && !isPrivateLocalSubnet(clean))
+    }
+
+    private fun isPrivateLocalSubnet(host: String): Boolean {
+        return host.startsWith("192.168.") ||
+                host.startsWith("10.") ||
+                (host.startsWith("172.") && host.split(".").let { it.size >= 2 && (it[1].toIntOrNull() ?: 0) in 16..31 })
     }
 
     fun getCandidateIps(): List<String> {

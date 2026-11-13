@@ -86,5 +86,35 @@ internal data class MossSessionContext(val instructions: String = "", val photos
             encodeCapturedPhoto = { null },
             encodeMessagePhoto = encodeMessagePhoto,
         )
+
+        /** Audio-only context: includes recent conversation text without attaching photos or video stream prompts. */
+        fun fromAudioOnly(messages: List<ChatMessage>): MossSessionContext {
+            val eligible = messages.filter { it.status == ChatStatus.READY }
+            val text = eligible.mapNotNull { message ->
+                val role = when {
+                    message.source == ChatSource.ASSISTANT || message.kind == ChatKind.ASSISTANT -> "Assistant"
+                    message.source == ChatSource.PHONE -> "User"
+                    else -> return@mapNotNull null
+                }
+                val body = when {
+                    message.kind == ChatKind.PHOTO -> {
+                        val caption = message.text.trim()
+                        if (caption.isNotEmpty()) "[Shared a photo: $caption]" else "[Shared a photo]"
+                    }
+                    message.text.isNotBlank() -> message.text.trim()
+                    else -> return@mapNotNull null
+                }.take(1_000)
+                "$role: $body"
+            }.takeLast(8).joinToString("\n").takeLast(MAX_INSTRUCTIONS_CHARS)
+
+            val instructions = if (text.isNotEmpty()) {
+                "Recent chat history for reference; do not repeat it as new dialogue:\n$text"
+            } else ""
+
+            return MossSessionContext(
+                instructions = instructions,
+                photos = emptyList(),
+            )
+        }
     }
 }

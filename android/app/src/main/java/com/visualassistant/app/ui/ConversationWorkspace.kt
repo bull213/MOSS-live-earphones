@@ -63,9 +63,16 @@ internal fun ConversationWorkspace(
     onImportBook: () -> Unit = {},
     moss: MossLiveUiState = MossLiveUiState(),
     onStartMoss: () -> Unit = {},
+    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
     endpoint: BackendEndpoint? = null,
+    speakingMessageId: String? = null,
+    onReplaySpeech: (String, String) -> Unit = { _, _ -> },
+    onSelectNotebook: (com.visualassistant.app.network.NotebookItem) -> Unit = {},
+    onExitNotebook: () -> Unit = {},
+    onLoadNotebooks: () -> Unit = {},
+    onClearRecentMemory: () -> Unit = {},
 ) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -88,7 +95,7 @@ internal fun ConversationWorkspace(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 840.dp
         val content: @Composable () -> Unit = {
-            if (settings) SettingsInfo(onBack = { settings = false }, endpoint = endpoint)
+            if (settings) SettingsInfo(onBack = { settings = false }, endpoint = endpoint, onClearRecentMemory = onClearRecentMemory)
             else ChatScreen(state, hasPhoto, openingCamera, storageFailed, onDraftChanged, onPhoto, onSend,
                 onNewSession = onNew, onHistory = { scope.launch { drawer.open() } },
                 onRetryStorage = onRetryStorage, onSave = onSave, onLoadEarlier = onLoadEarlier, showMenu = !wide,
@@ -97,16 +104,21 @@ internal fun ConversationWorkspace(
                 onVoice = onVoice, onVoiceSettings = onVoiceSettings, onSaveVoice = onSaveVoice, onDiscardVoice = onDiscardVoice,
                 actionBusy = actionBusy, onLiveMode = onLiveMode, onAttachPhoto = onAttachPhoto,
                 onUseTranscript = onUseTranscript, moss = moss, onStartMoss = onStartMoss,
-                onSharePhotoWithMoss = onSharePhotoWithMoss, onTakeLivePhoto = onTakeLivePhoto)
+                onCancelMoss = onCancelMoss,
+                onSharePhotoWithMoss = onSharePhotoWithMoss, onTakeLivePhoto = onTakeLivePhoto,
+                speakingMessageId = speakingMessageId, onReplaySpeech = onReplaySpeech,
+                onExitNotebook = onExitNotebook)
         }
         val drawerContent: @Composable () -> Unit = {
             AssistantSidebar(state = state, busy = busy, showingSettings = settings,
-                onRecent = { settings = false; onRecent(); closeDrawer() },
-                onNew = { if (state.messages.isEmpty()) { settings = false; onNew(); closeDrawer() } else confirmNew = true },
-                onOpen = { id -> settings = false; onOpen(id); closeDrawer() },
+                onRecent = { settings = false; onExitNotebook(); onRecent(); closeDrawer() },
+                onNew = { if (state.messages.isEmpty()) { settings = false; onExitNotebook(); onNew(); closeDrawer() } else confirmNew = true },
+                onOpen = { id -> settings = false; onExitNotebook(); onOpen(id); closeDrawer() },
                 onDelete = { deleteId = it },
                 onSettings = { onBeforeSettings { settings = true; closeDrawer() } },
-                onImportBook = { onImportBook(); closeDrawer() })
+                onImportBook = { onImportBook(); closeDrawer() },
+                onSelectNotebook = { nb -> settings = false; onSelectNotebook(nb); closeDrawer() },
+                onLoadNotebooks = onLoadNotebooks)
         }
         if (wide) {
             PermanentNavigationDrawer(drawerContent = {

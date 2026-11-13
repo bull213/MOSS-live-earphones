@@ -15,6 +15,7 @@ from app.config import MODEL_TIMEOUT_SECONDS, Settings
 from app.errors import AssistantError, error_response
 from app.middleware import RequestMiddleware
 from app.openai_gateway import OpenAIVisionGateway
+from app.photo_cache import PhotoCache
 from app.stepfun_gateway import StepFunGateway
 from app.knowledge.embeddings import LocalMiniLM
 from app.knowledge.index import KnowledgeIndex
@@ -23,6 +24,14 @@ from app.adb_watcher import run_adb_watcher
 from app.routes import router
 from app.knowledge.routes import router as knowledge_router
 from app.moss_live import router as moss_live_router
+from app.notebooklm.client import NotebookLMService
+from app.notebooklm.routes import router as notebooklm_router
+
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
 
 
 async def _staging_cleanup_loop(service: PhoneBookImportService) -> None:
@@ -31,6 +40,17 @@ async def _staging_cleanup_loop(service: PhoneBookImportService) -> None:
         try:
             await asyncio.to_thread(service.cleanup_expired)
         except OSError:
+            continue
+
+
+async def _notebooklm_keepalive_loop(service: NotebookLMService) -> None:
+    while True:
+        await asyncio.sleep(1200)
+        try:
+            await service.keepalive_tick()
+        except asyncio.CancelledError:
+            break
+        except Exception:
             continue
 
 
@@ -45,6 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             LocalMiniLM(configured.knowledge_data_dir / "models" / "all-MiniLM-L6-v2"),
         )
         application.state.knowledge_import_lock = Lock()
+        application.state.photo_cache = PhotoCache()
+        application.state.notebooklm_service = NotebookLMService(configured.notebooklm_data_dir)
         application.state.phone_book_import_service = PhoneBookImportService(
             configured.knowledge_data_dir,
             application.state.knowledge_index,
@@ -53,6 +75,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await asyncio.to_thread(application.state.phone_book_import_service.cleanup_expired)
         staging_cleanup = asyncio.create_task(_staging_cleanup_loop(application.state.phone_book_import_service))
         adb_watcher = asyncio.create_task(run_adb_watcher())
+        notebooklm_keepalive = asyncio.create_task(_notebooklm_keepalive_loop(application.state.notebooklm_service))
         client = None
         try:
             if configured.assistant_provider == "stepfun" and configured.stepfun_api_key is not None:
@@ -75,8 +98,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 application.state.vision_gateway = OpenAIVisionGateway(client, configured.openai_model)
             yield
         finally:
+            notebooklm_keepalive.cancel()
             adb_watcher.cancel()
             staging_cleanup.cancel()
+            try:
+                await notebooklm_keepalive
+            except asyncio.CancelledError:
+                pass
             try:
                 await adb_watcher
             except asyncio.CancelledError:
@@ -89,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await client.close()
             application.state.vision_gateway = None
             application.state.knowledge_index = None
+            application.state.notebooklm_service = None
             application.state.phone_book_import_service = None
 
     application = FastAPI(
@@ -97,10 +126,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version="0.2.0",
         lifespan=lifespan,
     )
+    application.state.settings = settings if settings is not None else Settings()
     application.add_middleware(RequestMiddleware)
     application.include_router(router)
     application.include_router(knowledge_router)
     application.include_router(moss_live_router)
+    application.include_router(notebooklm_router)
 
     @application.get("/health", tags=["health"])
     async def health() -> dict[str, str]:

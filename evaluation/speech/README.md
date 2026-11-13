@@ -23,8 +23,8 @@ are separate measurements and do not predict this app's performance on a phone.
   and local reports in ignored `evaluation/results/`. Obtain consent, minimize
   what is recorded, and delete the material when it is no longer needed.
 - The participant controls real-device permissions and connectivity. Verify
-  transcription with the network disconnected after the app is installed; the
-  USB simulated demo is separate and does not work without its computer backend.
+  transcription with the network disconnected after the app is installed; on-device
+  Moonshine speech recognition operates 100% offline without network or computer connectivity.
 
 ## Accuracy and interaction
 

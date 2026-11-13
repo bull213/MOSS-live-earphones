@@ -3,6 +3,16 @@
 A phone-first assistant for everyday tasks, starting in English on Android 12
 or newer with a Python backend on the developer's computer.
 
+## Architectural Subsystems & Boundaries
+- [Android Application Package](./app/src/main/java/com/visualassistant/app/README.md): Single-activity Kotlin / Jetpack Compose application architecture.
+  - [Camera Subsystem](./app/src/main/java/com/visualassistant/app/camera/README.md): CameraX photo capture and preview.
+  - [Chat & Discussion Subsystem](./app/src/main/java/com/visualassistant/app/chat/README.md): Room DB, Recent Memory, and LiveAssistant turns.
+  - [Voice & Offline Speech Subsystem](./app/src/main/java/com/visualassistant/app/voice/README.md): Moonshine offline STT, WebRTC VAD, and Android TTS playback.
+  - [User Interface Subsystem](./app/src/main/java/com/visualassistant/app/ui/README.md): High-contrast accessible Compose screens, badges, and readouts.
+  - [MOSS Live Subsystem](./app/src/main/java/com/visualassistant/app/mosslive/README.md): Bidirectional PCM voice streaming over loopback WebSockets.
+  - [Knowledge Ingestion Subsystem](./app/src/main/java/com/visualassistant/app/knowledge/README.md): Document scanning and multi-page upload.
+  - [Network & Endpoints Subsystem](./app/src/main/java/com/visualassistant/app/network/README.md): Base URL configuration and server scanner.
+
 ## Current milestone
 
 The main screen is a combined **Recent Memory** timeline with a compact composer.
@@ -13,8 +23,8 @@ information. **Save chat** protects the current discussion and its future
 messages; it does not save every discussion visible in the combined timeline.
 Opening a saved chat displays that conversation; return to Recent Memory through
 the sidebar. Normal assistant turns support text and optional photos.
-**Switch to live AI** uses bounded rolling Recent Memory as conversation
-context; **Voice** transcribes English locally using the phone microphone.
+**Voice** transcribes English locally using the phone microphone.
+**Collections**: The sidebar opens Collections to browse notebooks from the connected NotebookLM account. Entering a notebook allows direct interaction (typing or voice); turn-based questions query the notebook, audio earcons signal processing, and responses are read aloud via TTS.
 
 ### MOSS Live (voice with Recent Memory context)
 
@@ -51,10 +61,30 @@ preflight; this did not attach a session or verify audio relay. Do not start a
 MOSS session for routine validation: it connects to the real, potentially
 billable provider. Camera streaming is not implemented and remains off.
 
+### Collections (NotebookLM Voice & Text Chat)
+
+Selecting **Collections** in the sidebar displays the list of notebooks associated with the connected Google account (retrieved via `NotebookAuthApi.listNotebooks`). Selecting a notebook opens a dedicated conversational view:
+- **Server-Side Memory**: Conversation turns are grounded directly in the selected NotebookLM notebook; chat history is fetched from the notebook upon opening (`NotebookAuthApi.getHistory`) and managed upstream.
+- **Turn-Based Voice Interaction**: Tapping the microphone uses on-device Moonshine STT to transcribe the query. Once transcribed, `ToneEarconPlayer` emits a subtle waiting tone (`TONE_PROP_BEEP`) while the backend answers. Upon completion, earcons stop and the Android `TextToSpeech` engine articulates the response aloud.
+- **Audio-Optimized Badging**: Grounded answers display a purple `[📚 Manual: <title>]` badge with audio readout controls (`Replay`).
+
+### Voice-Command Switching Between MOSS Live and NotebookLM
+
+Hands-free voice switching between MOSS Live and NotebookLM Collections:
+- **Shared Hardware Capture Multiplexer (`AudioCaptureRouter` / `PhoneAudioCaptureRouter`)**: Avoids Android 12+ `AudioFlinger` capture concurrency lockouts (`isClientSilenced = true`) by running a single 16 kHz Mono PCM `AudioRecord` instance on `Dispatchers.IO` and multiplexing frames across `AudioDestination.MOSS`, `AudioDestination.VOICE`, and `AudioDestination.MUTED`.
+- **Command Grammar & Intent Parsing (`VoiceCommandClassifier`)**: Pure Kotlin classifier matching speech transcripts against the user's available notebooks:
+  - `"Use notebook [Notebook Name]"` / `"Switch to notebook [Notebook Name]"`: Suspends MOSS Live uplink, speaks TTS confirmation, and enables Moonshine STT in the chosen notebook.
+  - **Compound Single-Breath Queries**: `"Use notebook [Title], [Question]"` (e.g. `"Use notebook Neuroscience what is the dopamine pathway?"`) automatically isolates the question, queries NotebookLM, plays earcon waiting tones, and speaks the grounded reply without requiring a second utterance.
+  - **Return to MOSS**: `"Back to MOSS"` / `"Switch to MOSS"`: Halts active speech, vocalizes confirmation, and restores MOSS Live duplex uplink with <100ms resumption.
+  - **Spoken Summary**: `"Summarize now"`: Requests a concise 2-3 sentence spoken summary from the active notebook.
+  - **Unknown Notebook Protection**: Vocalizes `"Notebook [Title] not found. Staying in MOSS"` and cleanly resumes MOSS uplink without dropping the session.
+- **60-Second Quiescent Suspension Window**: Temporarily suspends MOSS Live audio/video (`mic_state: false`, `video.state: false`) with 15-second backend ping heartbeats. Automatically closes upstream after 60s of inactivity (`code=1000`) and seamlessly auto-reconnects when returning to MOSS.
+- **Acoustic Echo Discipline**: 200ms post-TTS acoustic decay guard prevents phone speaker audio from triggering self-transcription echo.
+
 ### Latest implementation verification
 
-The backend suite passes **148 tests** with one opt-in local-embedding test
-skipped. Android passes **62 JVM tests**, app and instrumentation APK builds,
+The backend suite passes **198 tests** with one opt-in local-embedding test
+skipped. Android passes **116 JVM tests**, app and instrumentation APK builds,
 and lint; instrumentation tests were compiled but not run on the connected
 phone. The updated debug APK was installed in place on the Samsung S24+ and the
 app launched. The install used `adb install -r`, preserving app data; no

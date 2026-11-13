@@ -46,6 +46,8 @@ internal object MossLiveProtocol {
     fun videoState(enabled: Boolean): String = JSONObject()
         .put("action", "video.state").put("source", "camera").put("enabled", enabled).toString()
 
+    fun cancelResponse(): String = JSONObject().put("action", "response.cancel").toString()
+
     fun taggedCameraFrame(jpeg: ByteArray): ByteArray = byteArrayOf(CAMERA_TAG) + jpeg
 
     fun taggedAudio(pcm: ByteArray): ByteArray =

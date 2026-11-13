@@ -54,14 +54,51 @@ class BackendEndpointTest {
     @Test
     fun resetToDefaultRestoresLoopback() {
         var stored: String? = "192.168.1.100:8000"
+        var storedToken: String? = "secret-token"
+        val endpoint = BackendEndpoint(
+            getPreference = { stored },
+            setPreference = { stored = it },
+            getTokenPreference = { storedToken },
+            setTokenPreference = { storedToken = it },
+        )
+
+        assertEquals("192.168.1.100:8000", endpoint.host)
+        assertEquals("secret-token", endpoint.bearerToken)
+        assertEquals("Bearer secret-token", endpoint.authorizationHeader())
+
+        endpoint.resetToDefault()
+        assertEquals(null, stored)
+        assertEquals(null, storedToken)
+        assertEquals("127.0.0.1:8000", endpoint.host)
+        assertEquals(null, endpoint.bearerToken)
+        assertEquals(null, endpoint.authorizationHeader())
+    }
+
+    @Test
+    fun detectsRemoteAndTailscaleEndpoints() {
+        var stored: String? = null
         val endpoint = BackendEndpoint(
             getPreference = { stored },
             setPreference = { stored = it },
         )
 
-        assertEquals("192.168.1.100:8000", endpoint.host)
-        endpoint.resetToDefault()
-        assertEquals(null, stored)
-        assertEquals("127.0.0.1:8000", endpoint.host)
+        // Loopback default
+        assertEquals(false, endpoint.isRemoteConfigured())
+        assertEquals(false, endpoint.isTailscale())
+
+        // Tailscale IP
+        endpoint.host = "100.85.12.34:8000"
+        assertEquals(true, endpoint.isRemoteConfigured())
+        assertEquals(true, endpoint.isTailscale())
+
+        // Tailscale MagicDNS
+        endpoint.host = "https://my-desktop.tail12345.ts.net"
+        assertEquals(true, endpoint.isRemoteConfigured())
+        assertEquals(true, endpoint.isTailscale())
+
+        // Arbitrary domain
+        endpoint.host = "assistant.example.com"
+        assertEquals(true, endpoint.isRemoteConfigured())
+        assertEquals(false, endpoint.isTailscale())
     }
 }

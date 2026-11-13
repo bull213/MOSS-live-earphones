@@ -4,7 +4,7 @@
 > **Master Location:** The comprehensive, refactored project handoff and agent operations guide is now maintained at the repository root: **[`../PROJECT_HANDOFF.md`](../PROJECT_HANDOFF.md)**.
 > This file is preserved for reference within the `android/` subproject.
 
-**Updated: 2026-11-11.** This guide describes the whole repository and the current implementation. Setup details and longer procedures live in the Android and backend READMEs linked below.
+**Updated: 2026-11-13.** This guide describes the whole repository and the current implementation. Setup details and longer procedures live in the Android and backend READMEs linked below.
 
 ## What this project is
 
@@ -19,6 +19,8 @@ The product has several separate interaction paths. They should not be confused:
 | Voice | Transcribes speech into a saved chat message. It does not ask the assistant a question automatically. | On-device Moonshine model |
 | MOSS Live | Streams microphone audio to MOSS in a live voice session and plays returned audio. Final transcripts are saved in the ordinary chat timeline. | Android app, local backend relay, MOSS cloud service |
 | Book / knowledge library | Imports documents, indexes passages locally and can provide relevant passages and reviewed methods to supported assistant requests. | Android OCR where applicable; local backend index and embedding model; StepFun for knowledge-assisted answering |
+| Collections (NotebookLM) | Direct notebook conversation with on-device speech transcription, waiting earcons, and TTS readouts. | Android on-device Moonshine STT, backend NotebookLM coprocessor, Android TTS |
+| Modal Voice Switching (MOSS Live &harr; NotebookLM) | Spoken commands ("Use notebook [Title]", "Back to MOSS", "Summarize now") to switch between MOSS Live and NotebookLM hands-free. | Android local classifier, shared AudioCaptureRouter, quiescent MOSS suspension, backend NotebookLM coprocessor |
 
 The old simulated demo route and demo UI have been removed. A transcription appearing in chat confirms speech recognition, not that an assistant response was generated.
 
@@ -50,6 +52,7 @@ The Android project is in `android/`, with application ID `com.visualassistant.a
 - **Offline Voice:** Moonshine Small Streaming transcribes English locally. WebRTC VAD detects pauses; after about two seconds of silence, the current utterance is finalized and saved. Raw audio is not uploaded or stored by this feature. It does not identify speakers.
 - **MOSS Live:** A separate, explicit voice-and-vision session. At startup, the app reads bounded rolling Recent Memory, sends up to eight finalized role-labeled text turns (including `[Shared a photo]` events) as reference instructions, selects the latest photo from rolling memory if no staged photo is active, and sends newest-first tagged JPEG camera frames (`0x01` + JPEG bytes). It runs a continuous 1,500ms background heartbeat coroutine (`cameraStreamJob`) to maintain persistent visual awareness without buffer timeouts. Users can take in-call photos ("Take Picture") to update the live stream, or snap photos pre-call ("Add to Discussion") directly into rolling memory. Successful normal HTTP chat turns added while MOSS is active are appended as reference context, with an attached photo sent as a frame. MOSS's own live transcripts are not replayed into its context. The app sends continuous 16 kHz mono PCM audio (including silence) through the backend. Returned 48 kHz mono PCM chunks are played in order and acknowledged after playback. Only finalized MOSS transcripts are persisted to Room; partial event text may appear temporarily in session state. Complete response audio can be transcribed locally as a fallback when provider transcript text is missing. Incomplete audio is discarded. TTS outside MOSS, wake words and speaker identification are not implemented.
 - **PDF import:** The user can choose a PDF. The app stages a private temporary copy, asks the backend which pages need OCR, uses bundled ML Kit Latin OCR on those pages, and sends the PDF plus OCR results to the local backend for indexing. The temporary phone copy is removed afterward.
+- **Modal Voice Switching & AudioCaptureRouter:** Hands-free vocal switching between MOSS Live and NotebookLM Collections (`VoiceCommandClassifier`, `AudioCaptureRouter`, `PhoneAudioCaptureRouter`). Manages a single physical 16 kHz Mono PCM `AudioRecord` instance eliminating `AudioFlinger` multi-client capture lockouts (`isClientSilenced = true`). Supports compound single-breath queries, a 60-second quiescent suspension window with 15s ping heartbeats, a 200ms post-TTS acoustic decay guard, and vocalized catalog fallback.
 - **Lifecycle and permissions:** Voice and MOSS stop when the user stops them, backgrounds the app, or leaves the active chat route. Camera and microphone permissions are requested only for the relevant feature.
 
 ### Android source map
@@ -57,12 +60,12 @@ The Android project is in `android/`, with application ID `com.visualassistant.a
 | Path | Responsibility |
 | --- | --- |
 | `android/app/src/main/java/.../camera/` | CameraX source, capture files and camera state |
-| `.../chat/` | Chat models, Room repository/database, normal assistant HTTP client, Recent Memory policy |
+| `.../chat/` | Chat models, Room repository/database, normal assistant HTTP client, Recent Memory policy, switching orchestration |
 | `.../mosslive/` | Realtime protocol, WebSocket client, session controller, audio capture/playback, transcript/audio helpers |
-| `.../voice/` | On-device microphone capture, VAD, utterance buffering and Moonshine transcription |
+| `.../voice/` | On-device microphone capture, AudioCaptureRouter multiplexer, VoiceCommandClassifier, VAD, utterance buffering, TTS extensions and Moonshine transcription |
 | `.../knowledge/` | Android PDF import, OCR and backend import API |
 | `.../ui/` | Compose screens, chat timeline, navigation and visual components |
-| `android/app/src/test/` | Local JVM tests |
+| `android/app/src/test/` | Local JVM tests (including AudioCaptureRouterTest, VoiceCommandClassifierTest, MossLiveSessionControllerTest, and ChatViewModelSwitchingTest) |
 | `android/app/src/androidTest/` | Tests that require an emulator or phone |
 | `android/scripts/` | Pinned Moonshine model and JNI helper scripts |
 | `android/third_party/moonshine-jni/` | JNI compatibility patch and rebuild notes |
@@ -130,7 +133,7 @@ For manual backend setup and all environment variables, follow [backend README](
 
 Builds and offline tests do not need to start MOSS. The Moonshine model must be fetched and checksum-verified on a fresh checkout before Android packaging. Android instrumentation tests require a device/emulator; compiling their APK does not execute them. Backend tests use mocked provider transports.
 
-The current Android source has been build-verified, its 83 local JVM tests pass, lint passes, and the instrumentation APK compiles. The backend suite passes 150 tests with 1 skipped. Instrumentation tests were not executed on a device. The app was updated in place and live MOSS sessions were run with the user's authorization; no phone data/settings were cleared.
+The current Android source has been build-verified, all local JVM tests pass (including AudioCaptureRouterTest, VoiceCommandClassifierTest, MossLiveSessionControllerTest, and ChatViewModelSwitchingTest), lint passes, and the debug APK builds and installs in place on the connected Samsung S24+ via USB. The backend suite passes 200 tests with 1 skipped. Instrumentation tests were not executed on a device. The app was updated in place and live MOSS sessions were run with the user's authorization; no phone data/settings were cleared.
 
 ## Current MOSS Live troubleshooting state
 

@@ -14,13 +14,41 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-internal fun interface LiveAssistant {
-    suspend fun answer(question: String, photo: CapturedPhoto?, history: List<ChatMessage>): String
+internal data class LiveHistoryItem(
+    val role: String,
+    val text: String,
+    val photoId: String? = null,
+)
+
+internal interface LiveAssistant {
+    suspend fun answer(
+        question: String,
+        photo: CapturedPhoto?,
+        history: List<ChatMessage>,
+        notebookId: String? = null,
+    ): AssistantTurnResult
+
+    companion object {
+        operator fun invoke(block: suspend (question: String, photo: CapturedPhoto?, history: List<ChatMessage>) -> AssistantTurnResult): LiveAssistant =
+            object : LiveAssistant {
+                override suspend fun answer(
+                    question: String,
+                    photo: CapturedPhoto?,
+                    history: List<ChatMessage>,
+                    notebookId: String?,
+                ): AssistantTurnResult = block(question, photo, history)
+            }
+
+        fun text(block: suspend (question: String, photo: CapturedPhoto?, history: List<ChatMessage>) -> String): LiveAssistant =
+            invoke { q, p, h -> AssistantTurnResult(block(q, p, h)) }
+    }
 }
 
-internal fun liveContext(history: List<ChatMessage>): List<Pair<String, String>> {
+internal fun liveContext(history: List<ChatMessage>): List<LiveHistoryItem> {
     var remaining = 4000
-    val result = mutableListOf<Pair<String, String>>()
+    val result = mutableListOf<LiveHistoryItem>()
+    val photoByTurn = history.filter { it.kind == ChatKind.PHOTO && it.photo != null }
+        .associate { it.turnId to it.photo!!.id }
     val selected = history.asReversed().asSequence()
         .filter { it.status == ChatStatus.READY && it.text.isNotBlank() &&
             it.kind in setOf(ChatKind.TEXT, ChatKind.ASSISTANT) }
@@ -28,7 +56,9 @@ internal fun liveContext(history: List<ChatMessage>): List<Pair<String, String>>
     for (message in selected) {
         val text = message.text.takeLast(minOf(remaining, 1000))
         if (text.isNotBlank()) {
-            result.add((if (message.kind == ChatKind.ASSISTANT) "assistant" else "user") to text)
+            val role = if (message.kind == ChatKind.ASSISTANT) "assistant" else "user"
+            val photoId = if (message.kind == ChatKind.TEXT) photoByTurn[message.turnId] else null
+            result.add(LiveHistoryItem(role = role, text = text, photoId = photoId))
             remaining -= text.length
         }
         if (remaining == 0) break
@@ -42,7 +72,11 @@ internal class PhoneLiveAssistant(
     private val endpoint: BackendEndpoint? = null,
     private val openConnection: () -> HttpURLConnection = {
         val targetUrl = endpoint?.httpUrl("v1/assistant/turns") ?: "http://127.0.0.1:8000/v1/assistant/turns"
-        URL(targetUrl).openConnection() as HttpURLConnection
+        val conn = URL(targetUrl).openConnection() as HttpURLConnection
+        endpoint?.authorizationHeader()?.let {
+            conn.setRequestProperty("Authorization", it)
+        }
+        conn
     },
 ) : LiveAssistant {
     constructor(resolver: ContentResolver, endpoint: BackendEndpoint? = null) : this(
@@ -50,7 +84,12 @@ internal class PhoneLiveAssistant(
         endpoint,
     )
 
-    override suspend fun answer(question: String, photo: CapturedPhoto?, history: List<ChatMessage>): String {
+    override suspend fun answer(
+        question: String,
+        photo: CapturedPhoto?,
+        history: List<ChatMessage>,
+        notebookId: String?,
+    ): AssistantTurnResult {
         endpoint?.let { ep ->
             val resolved = ServerScanner.findOrResolveBackend(ep.host)
             if (resolved != null) {
@@ -64,7 +103,14 @@ internal class PhoneLiveAssistant(
                     val image = photo?.let { encoder.encode(it) }
                     if (!continuation.isActive) return@Thread
                     val boundary = "live-" + UUID.randomUUID()
-                    val body = LiveProtocol.requestBody(boundary, question, LiveProtocol.historyJson(history), image)
+                    val body = LiveProtocol.requestBody(
+                        boundary,
+                        question,
+                        LiveProtocol.historyJson(history),
+                        image,
+                        photo?.id,
+                        notebookId,
+                    )
                     val connection = openConnection()
                     connectionRef.set(connection)
                     if (!continuation.isActive) { connection.disconnect(); return@Thread }
@@ -81,15 +127,28 @@ internal class PhoneLiveAssistant(
         }
     }
 
-    private fun send(connection: HttpURLConnection, boundary: String, body: ByteArrayOutputStream): String {
+    private fun send(connection: HttpURLConnection, boundary: String, body: ByteArrayOutputStream): AssistantTurnResult {
         connection.requestMethod = "POST"
         connection.connectTimeout = 5_000
-        connection.readTimeout = 35_000
+        connection.readTimeout = 55_000
         connection.doOutput = true
         connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        endpoint?.authorizationHeader()?.let {
+            connection.setRequestProperty("Authorization", it)
+        }
         connection.setFixedLengthStreamingMode(body.size())
         connection.outputStream.use { body.writeTo(it) }
-        if (connection.responseCode != 200) throw IOException("Assistant request failed")
+        if (connection.responseCode != 200) {
+            val errMessage = try {
+                val errStream = connection.errorStream
+                if (errStream != null) {
+                    val errJson = org.json.JSONObject(errStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
+                    errJson.optJSONObject("error")?.optString("message") ?: "HTTP ${connection.responseCode}"
+                } else "HTTP ${connection.responseCode}"
+            } catch (_: Exception) { "HTTP ${connection.responseCode}" }
+            if (connection.responseCode == 401) throw IOException("Google NotebookLM authentication expired. Please reconnect in Settings.")
+            throw IOException("Assistant request failed: $errMessage")
+        }
         val raw = connection.inputStream.bufferedReader(Charsets.UTF_8).use(LiveProtocol::readResponse)
         return LiveProtocol.parseResponse(raw)
     }

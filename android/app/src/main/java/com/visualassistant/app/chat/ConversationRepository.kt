@@ -214,12 +214,14 @@ internal class ConversationRepository(
         }
     }
 
-    override suspend fun finishTurn(conversationId: String, messageId: String, answer: String?, failed: Boolean): ConversationSnapshot = withContext(io) {
+    override suspend fun finishTurn(
+        conversationId: String, messageId: String, answer: String?, failed: Boolean, notebookTitle: String?,
+    ): ConversationSnapshot = withContext(io) {
         mutex.withLock {
             val conversation = dao.conversation(conversationId) ?: throw IOException("Conversation unavailable")
             val now = nextActivity()
             db.withTransaction {
-                dao.updateMessage(messageId, if (failed) ChatStatus.FAILED.name else ChatStatus.READY.name, answer.orEmpty(), now)
+                dao.updateMessage(messageId, if (failed) ChatStatus.FAILED.name else ChatStatus.READY.name, answer.orEmpty(), now, notebookTitle)
                 dao.updateConversation(conversationId, now, conversation.title)
             }
             trimRecent()
@@ -233,6 +235,25 @@ internal class ConversationRepository(
             db.withTransaction { dao.deleteConversation(id) }
             deleteUnreferencedPhotos(images)
             snapshot(dao.conversation(currentId) ?: dao.latest() ?: create())
+        }
+    }
+
+    override suspend fun clearRecentMemory(currentId: String?, viewingSaved: Boolean): ConversationSnapshot = withContext(io) {
+        mutex.withLock {
+            val images = dao.recentImages().distinct()
+            db.withTransaction {
+                dao.deleteRecentMessages()
+                dao.deleteRecentConversations()
+            }
+            deleteUnreferencedPhotos(images)
+            cleanupOrphanPhotos()
+            if (viewingSaved && currentId != null) {
+                val savedConv = dao.conversation(currentId)
+                if (savedConv != null) {
+                    return@withLock snapshot(savedConv)
+                }
+            }
+            snapshot(create())
         }
     }
 
@@ -252,10 +273,11 @@ internal class ConversationRepository(
     private fun turnMessage(
         conversationId: String, turnId: String, timestamp: Long, kind: ChatKind, source: ChatSource,
         text: String = "", status: ChatStatus = ChatStatus.READY, imageKey: String? = null, captureId: String? = null,
+        notebookTitle: String? = null,
     ) = MessageEntity(
         id = UUID.randomUUID().toString(), conversationId = conversationId, turnId = turnId,
         timestamp = timestamp, kind = kind.name, source = source.name, text = text, status = status.name,
-        imageKey = imageKey, captureId = captureId,
+        imageKey = imageKey, captureId = captureId, notebookTitle = notebookTitle,
     )
 
     private suspend fun insertTurn(id: String, time: Long, title: String, messages: List<MessageEntity>) {
@@ -320,6 +342,7 @@ internal class ConversationRepository(
             actions = if (messageKind == ChatKind.ASSISTANT && messageStatus == ChatStatus.READY) {
                 listOf(ChatAction.TAKE_PHOTO)
             } else emptyList(),
+            notebookTitle = notebookTitle,
         )
     }
 

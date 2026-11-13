@@ -48,6 +48,7 @@ internal fun ChatRoute(
     val speechState by chat.speechState.collectAsStateWithLifecycle()
     val pendingVoice by chat.pendingVoice.collectAsStateWithLifecycle()
     val mossState by chat.mossState.collectAsStateWithLifecycle()
+    val speakingMessageId by chat.speakingMessageId.collectAsStateWithLifecycle()
     val mossActive = mossState.connection !in setOf(MossConnectionState.IDLE, MossConnectionState.ERROR)
     val scope = rememberCoroutineScope()
     var showCamera by rememberSaveable { mutableStateOf(false) }
@@ -63,7 +64,8 @@ internal fun ChatRoute(
     var showImportDisclosure by remember { mutableStateOf(false) }
     var mossPermissionPending by remember { mutableStateOf(false) }
     val latestRecentPhoto = chatState.recentMessages.asReversed().firstOrNull { it.kind == ChatKind.PHOTO && it.photo != null }?.photo
-    val selectedPhoto = cameraState.photo?.takeIf { it.id == sessionPhotoId } ?: chatState.currentPhoto ?: latestRecentPhoto
+    val selectedPhoto = cameraState.photo?.takeIf { it.id == sessionPhotoId }
+        ?: (chatState.currentPhoto ?: latestRecentPhoto).takeIf { chatState.attachPhoto }
     val bookImporter = remember(activity, endpoint) { PhoneBookImporter(activity.contentResolver, activity.cacheDir, endpoint) }
     val bookPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && !importingBook) {
@@ -97,7 +99,7 @@ internal fun ChatRoute(
             mossPermissionPending = false
             scope.launch {
                 chat.stopVoiceAndWait()
-                chat.startMossLive(selectedPhoto)
+                chat.startMossLive(enableVideo = false)
             }
         } else if (!showCamera && !actionBusy) chat.startVoice()
     }
@@ -106,13 +108,13 @@ internal fun ChatRoute(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> microphone.refresh()
-                Lifecycle.Event.ON_STOP -> { chat.stopVoice(); chat.stopMossLive() }
+                Lifecycle.Event.ON_STOP -> { chat.stopVoice(); chat.stopMossLive(); chat.stopSpeech() }
                 else -> Unit
             }
         }
         microphone.refresh()
         activity.lifecycle.addObserver(observer)
-        onDispose { activity.lifecycle.removeObserver(observer); chat.stopVoice(); chat.stopMossLive() }
+        onDispose { activity.lifecycle.removeObserver(observer); chat.stopVoice(); chat.stopMossLive(); chat.stopSpeech() }
     }
 
     fun afterVoiceStops(action: () -> Unit) {
@@ -120,8 +122,13 @@ internal fun ChatRoute(
         actionBusy = true
         scope.launch {
             try {
+                val wasSpeaking = chat.isSpeaking()
+                chat.stopSpeech()
                 if (chat.stopVoiceAndWait()) {
-                    chat.stopMossLive()
+                    if (chat.state.value.activeNotebook != null) {
+                        chat.stopMossLive()
+                    }
+                    if (wasSpeaking) kotlinx.coroutines.delay(150)
                     action()
                 }
             }
@@ -214,8 +221,16 @@ internal fun ChatRoute(
                 }
             },
             onSend = { afterVoiceStops {
-                if (chat.state.value.liveMode) chat.sendLive(selectedPhoto.takeIf { chat.state.value.attachPhoto })
-                else if (selectedPhoto != null) chat.submit(selectedPhoto, chat.state.value.draft) else chat.sendTextWithoutPhoto()
+                val photoToSubmit = selectedPhoto
+                sessionPhotoId = null
+                val activeNb = chat.state.value.activeNotebook
+                if (activeNb != null) {
+                    chat.submitNotebookText(activeNb, chat.state.value.draft)
+                } else if (photoToSubmit != null) {
+                    chat.submit(photoToSubmit, chat.state.value.draft)
+                } else {
+                    chat.sendTextWithoutPhoto()
+                }
             } },
             onLiveMode = { enabled ->
                 chat.setLiveMode(enabled)
@@ -282,12 +297,13 @@ internal fun ChatRoute(
             onStartMoss = {
                 if (mossState.connection == MossConnectionState.IDLE || mossState.connection == MossConnectionState.ERROR) {
                     when (microphone.status) {
-                        CameraPermissionStatus.Granted -> afterVoiceStops { chat.startMossLive(selectedPhoto) }
+                        CameraPermissionStatus.Granted -> afterVoiceStops { chat.startMossLive(enableVideo = false) }
                         CameraPermissionStatus.Requestable -> { mossPermissionPending = true; microphone.request() }
                         CameraPermissionStatus.SettingsRequired -> microphone.openSettings()
                     }
                 } else chat.stopMossLive()
             },
+            onCancelMoss = chat::cancelMossTurn,
             onSharePhotoWithMoss = {
                 selectedPhoto?.let(chat::sharePhotoWithMossLive)
             },
@@ -297,6 +313,28 @@ internal fun ChatRoute(
                 showCamera = true
             },
             endpoint = endpoint,
+            speakingMessageId = speakingMessageId,
+            onReplaySpeech = chat::replaySpeech,
+            onSelectNotebook = { nb ->
+                afterVoiceStops {
+                    sessionPhotoId = null
+                    if (cameraState.photo != null) camera.retake()
+                    chat.selectNotebook(nb)
+                }
+            },
+            onExitNotebook = {
+                afterVoiceStops {
+                    chat.selectNotebook(null)
+                }
+            },
+            onLoadNotebooks = chat::loadNotebooks,
+            onClearRecentMemory = {
+                afterVoiceStops {
+                    sessionPhotoId = null
+                    if (cameraState.photo != null) camera.retake()
+                    chat.clearRecentRollingMemory()
+                }
+            },
         )
     }
 }

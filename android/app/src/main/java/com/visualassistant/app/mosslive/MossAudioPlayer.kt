@@ -25,6 +25,7 @@ internal interface MossAudioOutput {
     suspend fun stop()
     fun isResponseFullyPlayed(responseKey: String): Boolean
     fun isPlaybackActive(): Boolean = false
+    fun pause() {}
 }
 
 internal interface MossPlaybackTrack {
@@ -195,6 +196,10 @@ internal class MossAudioPlayer(
 
     override fun isPlaybackActive(): Boolean = synchronized(lock) {
         current != null || !queue.isEmpty()
+    }
+
+    override fun pause() {
+        track?.pause()
     }
 
     private fun createPlatformTrack(): MossPlaybackTrack {

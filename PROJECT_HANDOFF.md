@@ -1,6 +1,6 @@
 # Master Project Handoff: AI Visual Assistant
 
-> **Updated:** 2026-11-11  
+> **Updated:** 2026-11-13  
 > **Target Audience:** AI Engineering Agents (Antigravity/Pair Programmer) and Human Developers  
 > **Root Directory:** `C:\Users\liorc\PycharmProjects\PythonProject1`  
 > **Primary Application ID:** `com.visualassistant.app`  
@@ -30,7 +30,7 @@ This repository implements **Airflow / AI Visual Assistant for Older Adults**, a
 
 ## 2. Interaction Modes Matrix
 
-The assistant provides **five distinct interaction paths**. They must never be confused:
+The assistant provides **six distinct interaction paths**. They must never be confused:
 
 | Feature / Mode | Trigger & Input | Processing Path | Output & Persistence | Cost / Cloud Boundary |
 | :--- | :--- | :--- | :--- | :--- |
@@ -39,6 +39,8 @@ The assistant provides **five distinct interaction paths**. They must never be c
 | **3. Offline Voice (Speech-to-Text)** | "Voice" button in chat; phone microphone | On-device Moonshine Small Streaming model + WebRTC VAD (~2s silence pause) | Transcribed text appears as draft chat message. **Does NOT call AI assistant** | **100% Offline & Free**; zero network transmission |
 | **4. MOSS Live (Duplex Voice)** | "Start MOSS Live" button | Phone mic &rarr; 16 kHz PCM &rarr; FastAPI WS &rarr; MOSS upstream (`wss://api.mosi.cn/v1/realtime`) &rarr; 48 kHz PCM &rarr; AudioTrack | Audio played live via phone speaker; finalized transcripts persisted to Room | **Billable Realtime MOSS call**; active mic stream to cloud |
 | **5. Book / Knowledge Library** | Android PDF import or CLI `add` | Phone ML Kit Latin OCR (or local OCR) &rarr; Backend SQLite FTS5 + MiniLM &rarr; StepFun tool-use | Bounded passages & approved methods retrieved to answer complex questions | Ingestion is local/offline; answering/method extraction uses StepFun |
+| **6. Collections (NotebookLM)** | Sidebar "Collections" selection | Android on-device Moonshine STT &rarr; Earcon waiting tones &rarr; Backend NotebookLM coprocessor &rarr; TTS readout | Grounded notebook reply with badge `[📚 Manual: <title>]`, read aloud via TTS; server-side notebook memory | Free / Google account quota; zero local Room storage for collection turns |
+| **7. Modal Voice Switching** | Spoken commands (`"Use notebook [Title]"`, `"Back to MOSS"`, `"Summarize now"`) | Local catalog matching (`VoiceCommandClassifier`) &rarr; Shared hardware audio multiplexer (`AudioCaptureRouter`) &rarr; MOSS uplink suspended (`mic_state: false`, 60s quiescent window) &rarr; NotebookLM turn execution &rarr; 200ms acoustic decay guard &rarr; Voice STT / TTS | Seamless hands-free navigation between MOSS Live and NotebookLM without button taps | Automatic switching across free local Moonshine STT, NotebookLM coprocessor, and billable MOSS Live |
 
 > [!NOTE]
 > The historical simulated demo route (`/v1/demo/turns`) and demo UI have been completely removed from both Android and backend.
@@ -134,6 +136,16 @@ flowchart TD
     * In-call: User can tap "Take Picture" during active MOSS Live; the newly snapped image immediately updates the live video stream and appends context.
     * Pre-call: In `CameraScreen`, tapping "Add to Discussion" saves the photo directly to SQLite and rolling memory without requiring typed text.
   * Transcripts: Displays live interim captions; only finalized transcripts are persisted to Room.
+* **Hands-Free Modal Voice Switching & Shared Capture Router (`.../voice/` & `.../chat/`):**
+  * `AudioCaptureRouter` (`PhoneAudioCaptureRouter`): Manages a single physical 16 kHz Mono PCM `AudioRecord` instance (`VOICE_COMMUNICATION` audio source) to completely eliminate Android 12+ `AudioFlinger` multi-client capture contention (`isClientSilenced = true`). Multiplexes raw chunks to `AudioDestination.MOSS`, converts to normalized floats for `AudioDestination.VOICE` (Moonshine), or drops frames when `AudioDestination.MUTED`.
+  * `VoiceCommandClassifier`: Real-time pure-Kotlin classifier executing catalog-first longest-title matching over interim and finalized transcripts.
+    * Single Switch: `"Use notebook [Title]"` &rarr; suspends MOSS Live, speaks TTS confirmation, and enables Moonshine STT.
+    * Compound Query: `"Use notebook [Title], [Question]"` &rarr; strips switch prefix, preserves interrogative question intact, queries NotebookLM with waiting earcons, and vocalizes the grounded reply.
+    * Return Command: `"Back to MOSS"` &rarr; stops speech, vocalizes confirmation, restores MOSS duplex uplink with <100ms resumption (or auto-reconnects in background if session was closed).
+    * Notebook Summary: `"Summarize now"` &rarr; triggers concise 2-3 sentence spoken synthesis from active notebook.
+    * Catalog Fallback: `"Use notebook [Unknown]"` &rarr; vocalizes `"Notebook [Title] not found. Staying in MOSS"` and cleanly resumes MOSS uplink without dropping the call.
+  * 60-Second Quiescent Suspension Window: When switching away from MOSS Live, microphone and camera uplink are muted (`mic_state: false`, `video.state: false`), and `MossLiveRelaySession` executes 15-second ping heartbeats. After 60s of quiescence, the socket closes cleanly (`code=1000`) and seamlessly auto-reconnects when the user returns.
+  * Acoustic Echo Discipline: 200ms post-TTS reverberation decay guard before enabling `AudioDestination.VOICE`, preventing speaker echo self-transcription.
 * **PDF & OCR Ingestion (`.../knowledge/`):**
   * Reads user-selected PDF via Android Storage Access Framework.
   * Contacts backend `POST /v1/knowledge/staging` to determine which pages lack embedded text.
@@ -201,6 +213,7 @@ Cross-referenced with [android/BUGS_AND_FIXES.md](android/BUGS_AND_FIXES.md):
 | **MOSS-09** | Connectivity / Fallback & Client Isolation | **Diagnosed & Resolved** | Custom Wi-Fi IP setting broke USB cable mode; university Wi-Fi (`Free-TAU`) client isolation blocked direct wireless packets (`Destination Host Unreachable`). | 1) Implemented automatic fallback in `OkHttpMossLiveTransport` to `ws://127.0.0.1:8000` so cable mode always works regardless of settings; 2) Added `android:usesCleartextTraffic="true"`; 3) Documented Windows Mobile Hotspot for campus cable-free operation. |
 | **MOSS-10** | Wireless Auto-Discovery & Firewall | **Resolved & Live-Verified** | Phone hotspot subnet randomized to `10.183.3.x` with PC on `.200`, blocked by Windows Public Firewall profile. | 1) Prioritized `10.183.3.200` at Priority #1 in `ServerScanner.kt`; 2) Added UDP wake listener on port 8008; 3) Created self-elevating firewall configuration in `Start MOSS Live.cmd` / `setup_firewall.ps1`. |
 | **APP-01** | Camera Streaming & Visual Context | **Resolved & Live-Verified** | Video streaming during MOSS Live was previously voice-only, and pre-call rolling photos were not reached. | 1) Continuous camera video streaming (tagged `0x01` JPEG frames) with 1,500ms background heartbeat (`cameraStreamJob`); 2) In-call photo capture flow ("Take Picture"); 3) Rolling memory auto-detection (`latestRollingPhoto`); 4) Standalone pre-call capture ("Add to Discussion"); 5) Dialogue turn labeling (`User: [Shared a photo]`); 6) Newest-first photo ordering and prompt instruction. Verified live with 41 camera frames transmitted. |
+| **VOICE-01** | AudioFlinger Hardware Contention | **Resolved & Verified** | Attempting to start Moonshine STT while MOSS Live was active caused Android 12+ `AudioFlinger` to silence the second `AudioRecord` (`isClientSilenced = true`), resulting in empty audio buffers and STT freeze. | Created `PhoneAudioCaptureRouter` owning a single physical `AudioRecord` instance, multiplexing chunks across `MOSS`, `VOICE`, or `MUTED` destinations without hardware contention. |
 | **HW-01** | E12 Smart Earphones | Not Implemented | Intended E12 BLE earphones are not integrated. | Phone supplies camera, microphone, and speaker until vendor BLE/audio protocol is provided. |
 
 ### Failure Isolation Matrix for MOSS Live
@@ -230,7 +243,7 @@ All commands run on Windows (PowerShell) from the repository root: `C:\Users\lio
 ### Backend Verification
 
 ```powershell
-# 1. Activate Python virtual environment & run offline tests (150 tests, 1 skipped)
+# 1. Activate Python virtual environment & run offline tests (200 tests, 1 skipped)
 cd backend
 ..\.venv\Scripts\python.exe -m pytest -q
 cd ..
@@ -249,7 +262,7 @@ cd backend
 # 1. Fetch & checksum-verify pinned Moonshine model assets (once on fresh checkout)
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\android\scripts\fetch-moonshine-model.ps1
 
-# 2. Run JVM unit tests (83 tests), lint, and assemble debug APKs
+# 2. Run JVM unit tests, lint, and assemble debug APKs
 .\android\gradlew.bat --no-daemon --max-workers=4 --gradle-user-home .\android\.gradle-user-home -p android assembleDebug testDebugUnitTest lintDebug assembleDebugAndroidTest
 
 # 3. In-place install on connected phone (preserves database and app state)
@@ -288,9 +301,17 @@ adb install -r android\app\build\outputs\apk\debug\app-debug.apk
 | `android/.../network/ServerScanner.kt` | Scans local Wi-Fi / Phone Mobile Hotspot subnet for computer backend on port 8000 + `/health`. |
 | `android/.../network/AppWakeTrigger.kt` | Broadcasts UDP wake signal on app launch to trigger `Start MOSS Live.cmd` on PC. |
 | `android/.../network/BackendEndpoint.kt` | SharedPreferences-backed dynamic backend endpoint with loopback default. |
+| `android/.../network/NotebookAuthApi.kt` | HTTP client for NotebookLM auth status, login trigger, notebook catalog, and history. |
 | `android/.../voice/SpeechTranscriptionManager.kt` | Moonshine Small Streaming runner, WebRTC VAD pause detection (~2s). |
-| `android/.../chat/ChatViewModel.kt` | Room repository binding, Recent Memory budget enforcement, timeline updates. |
+| `android/.../voice/AudioCaptureRouter.kt` | Interface & destination routing (`MOSS`, `VOICE`, `MUTED`) for hardware capture multiplexing. |
+| `android/.../voice/PhoneAudioCaptureRouter.kt` | Owns single 16 kHz Mono PCM `AudioRecord` instance eliminating `AudioFlinger` contention. |
+| `android/.../voice/VoiceCommandClassifier.kt` | Catalog-first longest-title matching for hands-free switching and compound queries. |
+| `android/.../voice/SpeakerExtensions.kt` | Suspending coroutine bridge `Speaker.speakAwait` for synchronized TTS playback. |
+| `android/.../voice/ToneEarconPlayer.kt` | Auditory feedback emitting pulsing waiting tones (`ToneGenerator`) during asynchronous inference. |
+| `android/.../voice/TtsTextSanitizer.kt` | Regex pipeline stripping markdown, citations, and emojis for natural TTS speech readout. |
+| `android/.../chat/ChatViewModel.kt` | Room repository binding, Recent Memory budget enforcement, Collections turn coordination. |
 | `android/.../chat/ConversationRepository.kt` | Room DAO operations, 100 MiB eviction policy, photo persistence. |
+| `android/.../chat/ChatViewModelSwitchingTest.kt` | Unit tests for compound query extraction, quiescent suspension, and returning to MOSS. |
 | `android/.../camera/CameraCaptureManager.kt` | CameraX integration, orientation correction, EXIF stripping. |
 | `android/.../knowledge/BookImportManager.kt` | Staged PDF upload, phone-side ML Kit Latin OCR execution. |
 | **Backend Service (`backend/`)** | |
@@ -309,6 +330,8 @@ adb install -r android\app\build\outputs\apk\debug\app-debug.apk
 | `backend/app/knowledge/embeddings.py` | Local MiniLM (`all-MiniLM-L6-v2`) offline embedding loader. |
 | `backend/app/knowledge/cli.py` | CLI commands: `fetch-model`, `add`, `list`, `search`, `remove`. |
 | `backend/app/knowledge/book_import_service.py` | Staged upload coordinator for phone-scanned PDF documents. |
+| `backend/app/notebooklm/client.py` | Three-tier authenticated NotebookLM client with headless browser recovery and token retry. |
+| `backend/app/notebooklm/nlp.py` | Audio-optimized text cleaner removing citations, footnotes, and markdown formatting. |
 | **Evaluation Suite (`evaluation/`)** | |
 | [evaluation/README.md](evaluation/README.md) | Privacy-preserving evaluation criteria and case preparation. |
 | `evaluation/case-catalog.csv` | Catalog of 25 planned visual evaluation scenarios. |

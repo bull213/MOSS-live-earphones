@@ -1,6 +1,7 @@
 import asyncio
 import json
 import queue
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,9 +9,11 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.config import Settings
 from app.main import create_app
+from app.notebooklm import GroundedChatResult, NotebookLMAuthExpiredError
 from app.moss_live import (
     _client_command,
     _event,
+    _query_notebook_and_inject,
     _upstream_error_message,
     _upstream_status,
     _valid_android_event,
@@ -154,7 +157,7 @@ def test_gateway_relays_text_and_binary_frames_in_order(monkeypatch, tmp_path):
         return upstream
 
     monkeypatch.setattr("app.moss_live.connect", fake_connect)
-    app = create_app(Settings(_env_file=None, moss_api_key="test-key", knowledge_data_dir=tmp_path))
+    app = create_app(Settings(_env_file=None, moss_api_key="test-key", knowledge_data_dir=tmp_path, notebooklm_data_dir=tmp_path / "notebooklm"))
 
     with TestClient(app) as client:
         with client.websocket_connect("/v1/realtime/moss-live") as socket:
@@ -188,3 +191,321 @@ def test_gateway_relays_text_and_binary_frames_in_order(monkeypatch, tmp_path):
             assert socket.receive_text() == provider_text
             assert socket.receive_text() == provider_reply
             assert socket.receive_bytes() == provider_binary
+
+
+def test_prepare_grounded_voice_summary():
+    from app.moss_live import _prepare_grounded_voice_summary
+    raw = (
+        "The **fun criterion** is an epistemological concept [1, 2]. "
+        "Formulated by physicist David Deutsch [3-5]! 💡 "
+        "Here are more details about why it matters.\n\n"
+        "Second paragraph with information."
+    )
+    result = _prepare_grounded_voice_summary(raw, max_chars=100)
+    assert "[1, 2]" not in result
+    assert "[3-5]" not in result
+    assert "**" not in result
+    assert "💡" not in result
+    assert len(result) <= 100
+
+
+def test_find_matching_notebook_meta_queries_and_matching():
+    from app.moss_live import _find_matching_notebook
+    notebooks = [
+        {"id": "1", "title": "Reason is fun"},
+        {"id": "2", "title": "HOPFIELD NETWORKS IS ALL YOU NEED"},
+        {"id": "3", "title": "Success Forces - sugarman"},
+    ]
+
+    # Meta-queries should NOT match any notebook
+    assert _find_matching_notebook("Can you access my notebooks?", notebooks)[0] is None
+    assert _find_matching_notebook("Do you have access to my notebooks?", notebooks)[0] is None
+    assert _find_matching_notebook("What notebooks do I have?", notebooks)[0] is None
+    assert _find_matching_notebook("List my notebooks", notebooks)[0] is None
+
+    # Specific notebook queries should match
+    nb, q = _find_matching_notebook("Check Reason is fun. What is the fun criterion?", notebooks)
+    assert nb is not None and nb["title"] == "Reason is fun"
+
+    nb, q = _find_matching_notebook("Can you check Sugarman?", notebooks)
+    assert nb is not None and nb["title"] == "Success Forces - sugarman"
+
+    # Contextual follow-up
+    nb, q = _find_matching_notebook("What does it say about that?", notebooks, current_notebook=notebooks[0])
+    assert nb is not None and nb["title"] == "Reason is fun"
+
+
+@pytest.mark.anyio
+async def test_query_notebook_and_inject_success():
+    upstream = AsyncMock()
+    android = AsyncMock()
+    service = AsyncMock()
+    service.ask_chat.return_value = GroundedChatResult(
+        answer="The fun criterion requires problem solving to be fun."
+    )
+    notebook = {"id": "nb-1", "title": "Reason is fun"}
+    completed_tasks = []
+
+    await _query_notebook_and_inject(
+        upstream=upstream,
+        android=android,
+        service=service,
+        notebook=notebook,
+        query="What is fun?",
+        on_complete=completed_tasks.append,
+        timeout=5.0,
+    )
+
+    assert len(completed_tasks) == 1
+    # Check that session.instructions.append and response.create were sent
+    calls = upstream.send.call_args_list
+    assert len(calls) == 2
+    cmd1 = json.loads(calls[0][0][0])
+    assert cmd1["action"] == "session.instructions.append"
+    assert "According to Reason is fun" in cmd1["content"]
+    cmd2 = json.loads(calls[1][0][0])
+    assert cmd2["action"] == "response.create"
+    # Check that video.stream_resume was dispatched to Android
+    android.send_text.assert_called_once_with('{"action":"video.stream_resume"}')
+
+
+@pytest.mark.anyio
+async def test_query_notebook_and_inject_timeout():
+    upstream = AsyncMock()
+    android = AsyncMock()
+    service = AsyncMock()
+
+    async def _slow_chat(*args, **kwargs):
+        await asyncio.sleep(0.5)
+
+    service.ask_chat.side_effect = _slow_chat
+    notebook = {"id": "nb-1", "title": "Reason is fun"}
+    completed_tasks = []
+
+    await _query_notebook_and_inject(
+        upstream=upstream,
+        android=android,
+        service=service,
+        notebook=notebook,
+        query="What is fun?",
+        on_complete=completed_tasks.append,
+        timeout=0.05,
+    )
+
+    assert len(completed_tasks) == 1
+    calls = upstream.send.call_args_list
+    assert len(calls) == 2
+    cmd1 = json.loads(calls[0][0][0])
+    assert cmd1["action"] == "session.instructions.append"
+    assert "couldn't retrieve information from your Reason is fun notebook in time" in cmd1["content"]
+    cmd2 = json.loads(calls[1][0][0])
+    assert cmd2["action"] == "response.create"
+    android.send_text.assert_called_once_with('{"action":"video.stream_resume"}')
+
+
+@pytest.mark.anyio
+async def test_query_notebook_and_inject_auth_expired():
+    upstream = AsyncMock()
+    android = AsyncMock()
+    service = AsyncMock()
+    service.ask_chat.side_effect = NotebookLMAuthExpiredError("Expired")
+    notebook = {"id": "nb-1", "title": "Reason is fun"}
+    completed_tasks = []
+
+    await _query_notebook_and_inject(
+        upstream=upstream,
+        android=android,
+        service=service,
+        notebook=notebook,
+        query="What is fun?",
+        on_complete=completed_tasks.append,
+        timeout=5.0,
+    )
+
+    assert len(completed_tasks) == 1
+    calls = upstream.send.call_args_list
+    assert len(calls) == 2
+    cmd1 = json.loads(calls[0][0][0])
+    assert cmd1["action"] == "session.instructions.append"
+    assert "Google session credentials expired" in cmd1["content"]
+    cmd2 = json.loads(calls[1][0][0])
+    assert cmd2["action"] == "response.create"
+    android.send_text.assert_called_once_with('{"action":"video.stream_resume"}')
+
+
+def test_camera_frame_gating_and_preemption(monkeypatch, tmp_path):
+    class GatingFakeUpstream:
+        def __init__(self):
+            self.sent = queue.Queue()
+            self.incoming = asyncio.Queue()
+            self.loop = None
+            self.initial = iter((
+                '{"action":"session_attached","data":{"session_id":"s1"}}',
+                '{"action":"session.updated","data":{"error":""}}',
+            ))
+
+        async def send(self, message):
+            self.sent.put(message)
+
+        async def recv(self):
+            self.loop = asyncio.get_running_loop()
+            try:
+                return next(self.initial)
+            except StopIteration:
+                return await self.incoming.get()
+
+        async def close(self):
+            return None
+
+        def send_to_android(self, message):
+            asyncio.run_coroutine_threadsafe(self.incoming.put(message), self.loop).result(timeout=2)
+
+    upstream = GatingFakeUpstream()
+
+    async def fake_connect(*args, **kwargs):
+        return upstream
+
+    monkeypatch.setattr("app.moss_live.connect", fake_connect)
+
+    app = create_app(Settings(_env_file=None, moss_api_key="test-key", knowledge_data_dir=tmp_path, notebooklm_data_dir=tmp_path / "notebooklm"))
+    mock_service = AsyncMock()
+    mock_service.has_auth = lambda: True
+    mock_service.list_notebooks.return_value = [{"id": "nb-1", "title": "Reason is fun"}]
+    # Simulate a slow query in flight
+    async def _long_query(*args, **kwargs):
+        await asyncio.sleep(5.0)
+    mock_service.ask_chat.side_effect = _long_query
+
+    with TestClient(app) as client:
+        client.app.state.notebooklm_service = mock_service
+        with client.websocket_connect("/v1/realtime/moss-live") as socket:
+            assert socket.receive_json()["action"] == "session_attached"
+            assert socket.receive_json()["action"] == "session.updated"
+            # Drain initial commands
+            assert json.loads(upstream.sent.get(timeout=2))["action"] == "attach_session"
+            assert json.loads(upstream.sent.get(timeout=2))["action"] == "session.update"
+
+            # 1. Normal state: camera frame passes through
+            camera_frame = b"\x01\x10\x20"
+            socket.send_bytes(camera_frame)
+            assert upstream.sent.get(timeout=2) == camera_frame
+
+            # 2. Trigger notebook query via input.transcript.done
+            upstream.send_to_android('{"action":"input.transcript.done","data":{"text":"Check Reason is fun. What is it?"}}')
+            # Android receives video.stream_pause, then the transcript event
+            assert socket.receive_json()["action"] == "video.stream_pause"
+            assert socket.receive_json()["action"] == "input.transcript.done"
+
+            # Upstream receives response.cancel, then holding phrase session.instructions.append, then response.create
+            cmd_cancel = json.loads(upstream.sent.get(timeout=2))
+            assert cmd_cancel["action"] == "response.cancel"
+            cmd_hold = json.loads(upstream.sent.get(timeout=2))
+            assert cmd_hold["action"] == "session.instructions.append"
+            assert "Checking your 'Reason is fun' notebook now" in cmd_hold["content"]
+            cmd_create = json.loads(upstream.sent.get(timeout=2))
+            assert cmd_create["action"] == "response.create"
+
+            # 3. Audio frame passes through during retrieval
+            audio_frame = b"\x00\xaa\xbb"
+            socket.send_bytes(audio_frame)
+            assert upstream.sent.get(timeout=2) == audio_frame
+
+            # 4. Camera frame is dropped/gated while retrieval is in flight
+            dropped_camera_frame = b"\x01\xcc\xdd"
+            socket.send_bytes(dropped_camera_frame)
+            # Audio frame follows to verify queue ordering and that camera frame was dropped
+            audio_frame2 = b"\x00\xee\xff"
+            socket.send_bytes(audio_frame2)
+            # The next message received by upstream MUST be audio_frame2, NOT dropped_camera_frame!
+            assert upstream.sent.get(timeout=2) == audio_frame2
+
+            # 5. User says "cancel that" -> preemption cancellation
+            upstream.send_to_android('{"action":"input.transcript.done","data":{"text":"cancel that"}}')
+            assert socket.receive_json()["action"] == "video.stream_resume"
+
+            # 6. Camera frames now resume forwarding
+            resumed_camera_frame = b"\x01\x77\x88"
+            socket.send_bytes(resumed_camera_frame)
+            assert upstream.sent.get(timeout=2) == resumed_camera_frame
+
+
+def test_client_quiescent_disconnect_closes_upstream_code_1000(monkeypatch, tmp_path):
+    class CloseCaptureUpstream:
+        def __init__(self):
+            self.sent = queue.Queue()
+            self.closed_code = None
+            self.initial = iter((
+                '{"action":"session_attached","data":{"session_id":"s1"}}',
+                '{"action":"session.updated","data":{"error":""}}',
+            ))
+
+        async def send(self, message):
+            self.sent.put(message)
+
+        async def recv(self):
+            try:
+                return next(self.initial)
+            except StopIteration:
+                await asyncio.sleep(10.0)
+                return ""
+
+        async def close(self, code=1000, reason=""):
+            self.closed_code = code
+
+    upstream = CloseCaptureUpstream()
+
+    async def fake_connect(*args, **kwargs):
+        return upstream
+
+    monkeypatch.setattr("app.moss_live.connect", fake_connect)
+
+    app = create_app(Settings(_env_file=None, moss_api_key="test-key", knowledge_data_dir=tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/v1/realtime/moss-live") as socket:
+            assert socket.receive_json()["action"] == "session_attached"
+            assert socket.receive_json()["action"] == "session.updated"
+            socket.close(code=1000)
+
+    assert upstream.closed_code == 1000
+
+
+@pytest.mark.anyio
+async def test_mic_state_disabled_starts_and_stops_ping_loop():
+    from app.moss_live import MossLiveRelaySession
+
+    upstream = AsyncMock()
+    upstream.send = AsyncMock()
+    upstream.ping = AsyncMock()
+    android = AsyncMock()
+
+    relay = MossLiveRelaySession(
+        session_id="test-session",
+        android=android,
+        upstream=upstream,
+        service=None,
+        notebook_list=[],
+        started_at=0.0,
+    )
+
+    # Initially ping_task is None
+    assert relay.ping_task is None
+
+    # Android sends mic_state: false -> starts ping loop
+    handled = await relay._handle_android_text('{"action":"mic_state","enabled":false}')
+    assert handled
+    assert relay.ping_task is not None
+    assert not relay.ping_task.done()
+
+    # Android sends mic_state: true -> stops ping loop
+    handled = await relay._handle_android_text('{"action":"mic_state","enabled":true}')
+    assert handled
+    assert relay.ping_task is None
+
+    # Mic_state false again -> starts ping loop, and close_in_flight cancels it
+    await relay._handle_android_text('{"action":"mic_state","enabled":false}')
+    assert relay.ping_task is not None
+    relay.close_in_flight()
+    assert relay.ping_task is None
+
+
+
