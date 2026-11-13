@@ -73,8 +73,8 @@ Write-Host "`n[3/4] Checking Tailscale Status..." -ForegroundColor Cyan
 $tailscaleCmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
 if (-not $tailscaleCmd) {
     $tsPaths = @(
-        Join-Path $env:ProgramFiles "Tailscale\tailscale.exe",
-        Join-Path ${env:ProgramFiles(x86)} "Tailscale\tailscale.exe"
+        (Join-Path $env:ProgramFiles "Tailscale\tailscale.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Tailscale\tailscale.exe")
     )
     $foundTs = $tsPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($foundTs) {
