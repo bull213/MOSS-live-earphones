@@ -1,10 +1,8 @@
-# Stage 9: Implementation Readiness Test Report
+# Document Review Report: Implementation Readiness & Detailed Plan Audit
 
-**Target:** `docs/designs/backend_migration_to_android.md` (Lines 340–490)  
-**Standard:** `resources/document_standards/implementation-readiness-standard.md`  
-**Reviewers:** `egm-implementation-readiness` (Pragmatic Tech Lead), `egm-codebase-details` (Codebase Details Auditor), `egm-style` (Technical Copy Editor)
-
----
+**Target:** [docs/designs/private_remote_cellular_connectivity.md](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L240-L304) (Lines 240–304)  
+**Stage:** 9 (Implementation Readiness)  
+**Deliverable:** `implementation_readiness_report.md`  
 
 ## Reviewer Status
 
@@ -18,141 +16,93 @@
 
 ## Prioritized Findings (Blockers -> Major -> Nits)
 
-### 1. Undefined Google NotebookLM `batchexecute` Wire RPC Protocol & Schema - Severity: Blocker
+### 1. Phantom Protocol Action `session.attach` & Invalid State `ACTIVE_CALL` in Reconnect Handshake - Severity: 🔴 Blocker
+* **Reviewer Lens:** `egm-codebase-details` (cross-cutting `egm-implementation-readiness`)
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L280-L284](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L280-L284) (Phase 2, Step 1) & [private_remote_cellular_connectivity.md#L252](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L252) (Manifest Row 5)
+* **Discrepancy Description**: Phase 2 dictates:
+  > *"In onTransportClosed(code, reason): If code is non-normal (1006 or network I/O error) and the call was in ACTIVE_CALL or LISTENING state, launch a coroutine to attempt silent reconnection before calling fail(). On successful reconnect, re-send session.attach to resume duplex streaming."*
+  
+  This introduces three fatal architectural mismatches:
+  1. **Fabricated Protocol Action**: `session.attach` does not exist in [MossLiveProtocol.kt](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveProtocol.kt) or [backend/app/moss_live.py](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/moss_live.py). In `backend/app/moss_live.py` (lines 60–70), client actions are validated against `ALLOWED_CLIENT_ACTIONS` (`{"mic_state", "media.mode", "video.state", "video.stream_focus", "session.instructions.append", "playback.chunk.completed", "playback.completed", "playback.stopped", "response.cancel", "ping"}`). If Android transmits `{"action": "session.attach"}`, the backend rejects it with `invalid_event` and closes the socket immediately (`backend/app/moss_live.py#L268-L270`). Duplex negotiation is triggered server-side by emitting `session.updated`, to which the client responds with `media.mode` + `mic_state(true)`.
+  2. **Non-Existent Enum State**: `MossConnectionState` in [MossLiveSessionController.kt](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveSessionController.kt#L16) has no `ACTIVE_CALL` value (the states are `IDLE`, `CONNECTING`, `CONFIGURING`, `LISTENING`, `SPEAKING`, `STOPPING`, `ERROR`). Active duplex operation spans `LISTENING` and `SPEAKING`.
+  3. **Listener Signature Mismatch**: `MossLiveTransportListener` in [MossLiveTransport.kt](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L18-L24) defines `fun onClosed()` with zero parameters, not `onTransportClosed(code, reason)`.
+* **Rationale & Recommendation**: Any reconnection sequence following this design will fail or crash at runtime. Revise Phase 2 to:
+  1. Specify updating `MossLiveTransportListener.onClosed` to accept `(code: Int, reason: String)`.
+  2. Target active states `LISTENING` and `SPEAKING`.
+  3. Execute the established session initialization sequence (`media.mode`, `mic_state(true)`, and any pending instructions chunk) upon reconnect rather than sending `session.attach`.
+
+---
+
+### 2. Phantom Removal Instruction for `val fullHost` in `ServerScanner.kt` - Severity: 🔴 Blocker
+* **Reviewer Lens:** `egm-codebase-details`
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L273](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L273) (Phase 1, Step 2)
+* **Discrepancy Description**: Step 2 commands:
+  > *"Patch ServerScanner.kt: ... Remove val fullHost = if (resolvedHost.contains(":")) resolvedHost else "$resolvedHost:8000""*
+  
+  In the actual codebase, [ServerScanner.kt](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/network/ServerScanner.kt) contains no variable or statement matching `fullHost`. This code exists in [MossLiveTransport.kt#L54-L55](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L54-L55) and [LiveAssistant.kt#L96](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/chat/LiveAssistant.kt#L96).
+* **Rationale & Recommendation**: Implementers following Step 2 will fail to locate this code in `ServerScanner.kt`. Move this instruction to Phase 1, Step 3 ("Clean Up `LiveAssistant.kt` & `MossLiveTransport.kt`") and cite the exact file paths and line numbers.
+
+---
+
+### 3. Undefined Audio Capture Lifecycle & Buffer Overflow Risk During Roaming Drop - Severity: 🔴 Blocker
 * **Reviewer Lens:** `egm-implementation-readiness`
-* **Affected Scope:** Items 10 & 12 (Lines 400–404, 411–416)
-* **Discrepancy Description**: The plan directs the implementer to send cookie-authenticated HTTPS requests to `notebooklm.google.com/_/NotebooklmUi/data/batchexecute` for `listNotebooks()` and `askChat()`, but leaves the entire wire protocol undefined: RPC IDs (`wXbhs`/`q7Lhdb`), anti-CSRF token parsing (`SNlM0e`/`at` from HTML), session build labels (`f.sid`, `bl`), array envelope wrappers, and chunked `)]}'` anti-XSSI response unwrapping.
-* **Finding & Guidance**: Document the exact HTTP request method, URL query parameters, form headers, payload envelopes, and array unwrapping logic, or discard reverse-engineered mobile NotebookLM in favor of a supported cloud API or PC proxy.
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L280-L284](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L280-L284) (Phase 2, Step 1)
+* **Discrepancy Description**: During cell tower handovers, the WebSocket connection drops for 500ms to 5000ms across the retry intervals (500ms, 1500ms, 3000ms). The plan does not specify the state of the audio capture pipeline (`RealtimeAudioSource`). If the hardware microphone continues streaming PCM chunks while the transport is dead, the queue exceeds `MAX_AUDIO_BACKLOG_BYTES` (32KB in [MossLiveSessionController.kt#L347](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveSessionController.kt#L347)), causing an immediate fatal call to `fail()`. Furthermore, the plan does not define what happens to `MossAudioPlayer` downlink audio playback or whether a `RECONNECTING` connection state is displayed in the UI.
+* **Rationale & Recommendation**: Explicitly define the controller's audio state during reconnection:
+  1. Temporarily pause audio capture or discard uplink frames instead of pushing them into `transport.sendBinary()`.
+  2. Pause/drain active downlink response playback.
+  3. Define the UI transition behavior and how the retry counter resets upon receiving `session.updated`.
 
 ---
 
-### 2. Technical Impossibility: Scanning QR Codes with ML Kit Latin OCR - Severity: Blocker
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-codebase-details`
-* **Affected Scope:** Item 17 (Lines 443–447) & Item 1 (Lines 346–352)
-* **Discrepancy Description**: Item 17 specifies that `CameraKeyScanner` uses bundled Google ML Kit Latin OCR (`com.google.mlkit:text-recognition`) to scan desktop screen QR codes. ML Kit Latin OCR is an alphanumeric text recognition model; it cannot detect or decode 2D matrix QR codes. Scanning QR codes requires `com.google.mlkit:barcode-scanning`, which is not in `build.gradle.kts`.
-* **Finding & Guidance**: Either add `com.google.mlkit:barcode-scanning` to `build.gradle.kts` and implement a barcode analyzer, or eliminate `CameraKeyScanner` and QR sync altogether in favor of standard clipboard paste.
-
----
-
-### 3. Missing Kotlin Serialization Compiler Plugin & MockWebServer Dependencies - Severity: Blocker
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-codebase-details`
-* **Affected Scope:** Item 1 (Lines 346–352) & Verification Plan (Lines 475–481)
-* **Discrepancy Description**: Item 1 adds the runtime library `kotlinx-serialization-json:1.6.3`, but omits the mandatory Gradle compiler plugin `id("org.jetbrains.kotlin.plugin.serialization")`. Adding the library without the compiler plugin causes `@Serializable` compile-time failures. Furthermore, the verification plan specifies unit tests using `MockWebServer`, but `com.squareup.okhttp3:mockwebserver` is missing from `build.gradle.kts`.
-* **Finding & Guidance**: In Item 1, add `plugins { id("org.jetbrains.kotlin.plugin.serialization") }` and `testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")`.
-
----
-
-### 4. Non-Existent Filepath Reference for `AndroidPhotoEncoder.kt` - Severity: Blocker
+### 4. Non-Existent OkHttpClient Dependency in `ServerScanner.kt` - Severity: 🟡 Major
 * **Reviewer Lens:** `egm-codebase-details`
-* **Affected Scope:** Item 7 (Line 381)
-* **Discrepancy Description**: The document lists `android/app/src/main/java/com/visualassistant/app/chat/AndroidPhotoEncoder.kt (Modify)`. This file does not exist in the repository. The actual file is `PhotoEncoder.kt`, which defines internal class `AndroidPhotoEncoder`.
-* **Finding & Guidance**: Update the target file path to `android/app/src/main/java/com/visualassistant/app/chat/PhotoEncoder.kt`.
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L249](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L249) (Manifest Row 2) & [private_remote_cellular_connectivity.md#L271-L272](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L271-L272) (Phase 1, Step 2)
+* **Discrepancy Description**: Step 2 requires: *"Probe `https://<host>/health` via OkHttp client configured with a 5000ms connection timeout and read timeout."* [ServerScanner.kt](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/network/ServerScanner.kt) exclusively uses standard `java.net.HttpURLConnection` and `java.net.Socket`. It does not import or own an `OkHttpClient` instance. Allocating a new `OkHttpClient` inside `ServerScanner.verifyHost` creates fresh connection pools and background threads on every subnet probe.
+* **Rationale & Recommendation**: Either update `isHealthOkUrl()` in `ServerScanner.kt` to handle HTTPS via standard `HttpURLConnection` with the specified 5000ms timeout, or explicitly define an injected/shared `OkHttpClient` singleton.
 
 ---
 
-### 5. False Assertion of Codebase State & Duplication: `OkHttpMossLiveTransport` - Severity: Blocker
-* **Reviewer Lens:** `egm-codebase-details`
-* **Affected Scope:** Item 9 (Lines 395–399)
-* **Discrepancy Description**: Item 9 proposes creating `RemotePCMossTransport.kt` to "refactor `OkHttpMossLiveTransport` to connect to `ws://127.0.0.1:8000/v1/realtime/moss-live` when Workstation Mode is active." In reality, `OkHttpMossLiveTransport` is located in `MossLiveTransport.kt` and already connects to the PC backend using dynamic discovery via `ServerScanner.findOrResolveBackend`.
-* **Finding & Guidance**: Retain `OkHttpMossLiveTransport` in `MossLiveTransport.kt` for workstation mode and create only `DirectMossLiveTransport.kt` for standalone mode.
-
----
-
-### 6. False Assertion & Class Reinvention: `ChatViewModel` & `AssistantGateway` - Severity: Blocker
-* **Reviewer Lens:** `egm-codebase-details`
-* **Affected Scope:** Item 3 (Lines 359–363) & Item 19 (Lines 453–458)
-* **Discrepancy Description**:
-  1. Item 19 claims `ChatViewModel` hardcodes `PhoneLiveAssistant`. In reality, `ChatViewModel` receives interface `LiveAssistant`.
-  2. Item 3 defines `AssistantGateway`, reinventing `LiveAssistant` while omitting `notebookId` and stripping `readAloud`, `notebookTitle`, and `sources` from the return type.
-* **Finding & Guidance**: Discard `AssistantGateway`. Implement `DirectCloudLiveAssistant` implementing existing `LiveAssistant` (`AssistantTurnResult`).
-
----
-
-### 7. Missing Composition Root & Navigation Files in Target Manifest - Severity: Blocker
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-codebase-details`
-* **Affected Scope:** Lines 344–464
-* **Discrepancy Description**: The target files manifest omits critical files that wire the application:
-  1. `MainActivity.kt`: Composition root where `LiveAssistant`, `MossLiveTransport`, `BackendEndpoint`, and `ChatViewModel` are wired.
-  2. `ChatRoute.kt`: Contains UI launchers and callbacks for `PhoneBookImporter` (which is marked for deprecation).
-  3. `ConversationWorkspace.kt`: Hardcodes rendering of `SettingsInfo`.
-* **Finding & Guidance**: Add `MainActivity.kt` (Modify), `ChatRoute.kt` (Modify), and `ConversationWorkspace.kt` (Modify) to the target files manifest.
-
----
-
-### 8. Non-Existent Class Reference: `AssistantErrorMapper` - Severity: Blocker
-* **Reviewer Lens:** `egm-codebase-details`, `egm-implementation-readiness`
-* **Affected Scope:** Item 19 (Line 457)
-* **Discrepancy Description**: Item 19 directs the implementer to wire error translation via `AssistantErrorMapper`, but this class does not exist in the repository and is omitted from the target files list to create.
-* **Finding & Guidance**: Add `AssistantErrorMapper.kt` (Create) under `com/visualassistant/app/network/ai/` and define its mapping table.
-
----
-
-### 9. Underspecified Cloud Gateway Wire Contracts & OpenAI Protocol Mismatch - Severity: Major
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-codebase-details`
-* **Affected Scope:** Item 5 (Lines 369–375)
-* **Discrepancy Description**: The plan states that `DirectCloudAssistantGateway` calls OpenAI and StepFun, but leaves active provider resolution undefined, omits JSON schemas for structured output, and claims both use `/v1/chat/completions`, whereas the PC backend uses OpenAI's Responses API (`client.responses.parse`) for `gpt-6.1-terra`.
-* **Finding & Guidance**: Specify the active provider selection mechanism, provide exact JSON payload schemas for OpenAI and StepFun, and define the `AssistantAction` enum.
-
----
-
-### 10. Remote PC Gateway Multipart Wire Contract Underspecified - Severity: Major
+### 5. Automation Gap in Dynamic Quick Tunnel URL Extraction vs Named Tunnels - Severity: 🟡 Major
 * **Reviewer Lens:** `egm-implementation-readiness`
-* **Affected Scope:** Item 6 (Lines 376–380)
-* **Discrepancy Description**: The PC backend endpoint `POST /v1/assistant/turns` requires `multipart/form-data` with `question`, `image`, `history_json`, etc., and returns `AssistantTurnResponse`. The plan does not specify this multipart structure.
-* **Finding & Guidance**: Document the `MultipartBody.Builder` construction, form field names, and mapping logic from `AssistantTurnResponse` to `AssistantTurnResult`.
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L254](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L254) (Manifest Row 7) & [private_remote_cellular_connectivity.md#L286-L291](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L286-L291) (Phase 3, Step 1)
+* **Discrepancy Description**: Step 1 claims `setup_remote_tunnel.ps1` will *"Provide options for both persistent named tunnels and quick tunnels running as a persistent background daemon"* and *"Output the exact connection URL and Bearer token formatted for immediate entry into the mobile app settings."*
+  However:
+  - Quick tunnels (`cloudflared tunnel --url http://127.0.0.1:8000`) cannot be installed as Windows Services via `cloudflared service install` without a Cloudflare account token.
+  - Quick tunnels assign a random ephemeral hostname (`https://<random>.trycloudflare.com`) on every start, requiring async stdout/stderr scraping to discover the active URL.
+  - If the background daemon restarts, the URL mutates, breaking Android client connectivity unless a Named Tunnel is configured.
+* **Rationale & Recommendation**: Disambiguate Quick Tunnels (development mode: process execution with regex extraction from log files) from Named Tunnels (production mode: requiring Cloudflare account credentials/tunnel token and static hostname). Detail how the script extracts and presents the dynamic URL.
 
 ---
 
-### 11. Cleartext Configuration Requires Modifying `network_security_config.xml` - Severity: Major
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-codebase-details`, `egm-style`
-* **Affected Scope:** Item 2 (Lines 353–358)
-* **Discrepancy Description**: In Android, `android:usesCleartextTraffic` is an all-or-nothing flag. Restricting cleartext strictly to loopback and private subnets requires modifying `network_security_config.xml`, which currently has `cleartextTrafficPermitted="true"` globally.
-* **Finding & Guidance**: Add `android/app/src/main/res/xml/network_security_config.xml` (Modify) to the target files list with explicit domain configs.
+### 6. Missing Fallback Trigger Specification for WebSocket `?token=` Query Param - Severity: 🟡 Major
+* **Reviewer Lens:** `egm-implementation-readiness` / `egm-codebase-details`
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L251](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L251) (Manifest Row 4) & [private_remote_cellular_connectivity.md#L274-L275](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L274-L275) (Phase 1, Step 3)
+* **Discrepancy Description**: Manifest Row 4 requires: *"Ensure Authorization: Bearer <token> header is added to the OkHttp WebSocket connection request, with ?token=<token> query parameter fallback."*
+  However, Phase 1 Step 3 contains no instruction on how the fallback is triggered. [MossLiveTransport.kt#L76-L80](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L76-L80) attaches the header, but never decorates the URL with `?token=`. If an edge proxy strips the `Authorization` header, the connection fails with code 4401.
+* **Rationale & Recommendation**: Explicitly state whether `?token=<token>` should always be appended to the WebSocket URL when `bearerToken` is present (which [backend/app/moss_live.py#L515-L517](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/moss_live.py#L515-L517) supports natively), or if it is an automatic retry fallback upon receiving 401/4401.
 
 ---
 
-### 12. MOSS Live Handshake State Desynchronization - Severity: Major
+### 7. Missing Automated Unit Tests for Controller Reconnect State Machine - Severity: 🟢 Nit
 * **Reviewer Lens:** `egm-implementation-readiness`
-* **Affected Scope:** Item 8 (Lines 387–394)
-* **Discrepancy Description**: `MossLiveSessionController` expects `session_attached` and `session.updated` via `onText()` to transition to `LISTENING`. If `DirectMossLiveTransport` consumes the handshake internally without emitting these events, the controller hangs in `CONFIGURING`.
-* **Finding & Guidance**: Specify whether `DirectMossLiveTransport` forwards raw provider handshake messages to `MossLiveTransportListener`, and add explicit lifecycle hooks (`suspendTransport()`, `resumeTransport()`).
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L253](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L253) (Manifest Row 6) & [private_remote_cellular_connectivity.md#L276-L277](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L276-L277) (Phase 1, Step 4)
+* **Discrepancy Description**: The verification step only runs `BackendEndpointTest`. The new reconnection logic in `MossLiveSessionController.kt` (exponential backoff timing, max retry counters, coroutine lifecycle, buffer preservation) has no unit tests scheduled.
+* **Rationale & Recommendation**: Add `MossLiveSessionControllerTest` to the touched manifest and Phase 1 Step 4 test execution command to verify reconnect behavior deterministically without requiring physical cellular handover tests.
 
 ---
 
-### 13. Missing Method `getHistory` on `NotebookLMClient` - Severity: Major
-* **Reviewer Lens:** `egm-codebase-details`
-* **Affected Scope:** Item 10 (Lines 400–404)
-* **Discrepancy Description**: `ChatViewModel` calls `notebookAuthApi.getHistory(notebook.id)` to load previous Q&A turns upon notebook selection. Item 10 omits `getHistory` from `NotebookLMClient`.
-* **Finding & Guidance**: Add `suspend fun getHistory(notebookId: String): List<ConversationTurn>` to `NotebookLMClient`.
-
----
-
-### 14. Existing Component Conflict: `SettingsInfo.kt` vs `SettingsScreen.kt` - Severity: Major
-* **Reviewer Lens:** `egm-codebase-details`
-* **Affected Scope:** Item 16 (Lines 435–442)
-* **Discrepancy Description**: The app already contains `SettingsInfo.kt`. Item 16 proposes creating `SettingsScreen.kt` without defining whether `SettingsInfo.kt` is replaced, modified, or wrapped.
-* **Finding & Guidance**: State explicitly whether `SettingsScreen.kt` replaces or embeds `SettingsInfo.kt`.
-
----
-
-### 15. Grammatical Inconsistency & Taxonomy Ambiguity in Implementation List - Severity: Major
+### 8. Static Method Placement Ambiguity (`normalizeHost` & `isRemoteHost`) - Severity: 🟢 Nit
 * **Reviewer Lens:** `egm-style`
-* **Affected Scope:** Lines 346–463
-* **Discrepancy Description**: Items mix imperative verbs, third-person indicative, and verbless noun fragments. Items 9 and 20 introduce non-standard actions `(Create / Refactor)` and `(Deprecate / Remove)`.
-* **Finding & Guidance**: Standardize all items on active imperative verbs and adhere strictly to `(Create)`, `(Modify)`, or `(Delete)`.
+* **Affected Scope:** [private_remote_cellular_connectivity.md#L248](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L248) & [private_remote_cellular_connectivity.md#L261-L268](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L261-L268) (Phase 1, Step 1)
+* **Discrepancy Description**: Step 1 defines `normalizeHost(raw: String): String`, and Step 2 calls `BackendEndpoint.isRemoteHost(host)`. Because `BackendEndpoint` is a class requiring constructor dependencies (`getPreference`, `setPreference`), calling `BackendEndpoint.isRemoteHost(host)` requires it to be on the `companion object`.
+* **Rationale & Recommendation**: Explicitly specify that `normalizeHost` and `isRemoteHost` are static companion methods on `BackendEndpoint.Companion` so callers can invoke them without constructing instance dependencies.
 
 ---
 
-### 16. Uncalibrated Latency Benchmarks & Unobservable Verification Criteria - Severity: Major
-* **Reviewer Lens:** `egm-implementation-readiness`, `egm-style`
-* **Affected Scope:** Lines 475–487
-* **Discrepancy Description**: Requiring a 3s round-trip SLA for external cloud vision APIs is uncalibrated to real-world networks. Stating "verify speaker AEC" specifies an internal DSP process rather than an observable test behavior.
-* **Finding & Guidance**: Calibrate test criteria to observable behavior: successful receipt within timeout (<10s) and duplex audio stability without acoustic echo feedback during simultaneous speech.
+## Summary Severity Tally
+* 🔴 **Blockers**: 3
+* 🟡 **Major**: 3
+* 🟢 **Nits**: 2
 
----
-
-### 17. Nits (File Clamping, Version Constants, Slang) - Severity: Nit
-* **Redundant Clamping in `PhotoEncoder.kt`**: 1600px edge clamping is already implemented.
-* **Omission of `PROMPT_VERSION`**: Include `const val PROMPT_VERSION = "visual-assistant-v1"`.
-* **UI Nomenclature**: Replace "active cookie status pill" with "badge" or "indicator".
-* **Redundant Phrasing**: Strip redundant wordiness ("duplicate collisions", "earcon tones").
+The review deliverable is ready for integration into the design document revision.

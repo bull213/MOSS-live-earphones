@@ -117,13 +117,28 @@ internal object ServerScanner {
         } else {
             port
         }
-        val timeoutMs = if (hostPart == "127.0.0.1" || hostPart == "localhost") 250 else 1200
+        val isRemote = isRemoteHost(hostPart) || isSecure
+        val timeoutMs = if (hostPart == "127.0.0.1" || hostPart == "localhost") {
+            250
+        } else if (isRemote) {
+            5000
+        } else {
+            1200
+        }
 
         return try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(hostPart, effectivePort), timeoutMs)
+            if (!isRemote) {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress(hostPart, effectivePort), timeoutMs)
+                }
             }
-            isHealthOkUrl("$scheme://$hostPart:$effectivePort/health", timeoutMs)
+            val targetUrl = if (isSecure || isRemote) {
+                val portSuffix = if (effectivePort != 443 && effectivePort != 80) ":$effectivePort" else ""
+                "$scheme://$hostPart$portSuffix/health"
+            } else {
+                "$scheme://$hostPart:$effectivePort/health"
+            }
+            isHealthOkUrl(targetUrl, timeoutMs)
         } catch (_: Exception) {
             false
         }
@@ -157,10 +172,7 @@ internal object ServerScanner {
     }
 
     fun isRemoteHost(host: String): Boolean {
-        val clean = stripPort(host).lowercase()
-        return clean.contains(".ts.net") ||
-                clean.startsWith("100.") ||
-                (clean != "127.0.0.1" && clean != "localhost" && !isPrivateLocalSubnet(clean))
+        return BackendEndpoint.isRemoteHost(host)
     }
 
     private fun isPrivateLocalSubnet(host: String): Boolean {

@@ -301,8 +301,6 @@ class ChatViewModel internal constructor(
 
     internal fun stopMossLive() { mossLive?.stop() }
 
-    internal fun cancelMossTurn() { mossLive?.cancelActiveTurn() }
-
     fun replaySpeech(messageId: String, text: String) {
         if (speakingMessageId.value == messageId) {
             stopSpeech()

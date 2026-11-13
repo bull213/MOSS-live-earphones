@@ -93,7 +93,7 @@ internal class PhoneLiveAssistant(
         endpoint?.let { ep ->
             val resolved = ServerScanner.findOrResolveBackend(ep.host)
             if (resolved != null) {
-                ep.host = if (resolved.contains(":")) resolved else "$resolved:8000"
+                ep.host = BackendEndpoint.normalizeHost(resolved)
             }
         }
         return suspendCancellableCoroutine { continuation ->

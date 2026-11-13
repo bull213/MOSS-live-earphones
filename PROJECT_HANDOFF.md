@@ -5,7 +5,7 @@
 > **Root Directory:** `C:\Users\liorc\PycharmProjects\PythonProject1`  
 > **Primary Application ID:** `com.visualassistant.app`  
 > **Development Ports:** `127.0.0.1:8000` / `0.0.0.0:8000` (FastAPI backend), `tcp:8000` (ADB reverse tunnel)  
-> **Connectivity Modes:** Direct Wi-Fi LAN (Cable-Free) & USB Cable (ADB reverse tunnel)
+> **Connectivity Modes:** Direct Wi-Fi LAN (Cable-Free), USB Cable (ADB reverse tunnel), & Remote Cellular Mobile Data (Cloudflare Tunnel)
 
 ---
 
@@ -119,6 +119,7 @@ flowchart TD
   * Room stores chats and messages in `databases/conversations.db`.
   * **Recent Memory:** A rolling 100 MiB logical content budget across conversations. Oldest completed, unsaved turns are automatically purged when capacity is reached.
   * Tapping **Save chat** locks that conversation against automatic rolling deletion.
+  * **Manual Memory Reset:** In Settings > Recent Memory, users can trigger "Delete rolling memory chat history" with a confirmation dialog. This permanently purges unsaved rolling chats (`saved = 0`) and unreferenced photos without deleting or changing saved chats or NotebookLM notebooks.
 * **Offline Voice Engine:**
   * Uses Moonshine Voice SDK 0.1.6 with the English Small Streaming model (`quantized_26_11_02`).
   * Packaged into APK assets (`android/app/src/main/assets/moonshine/small-streaming-en/`).

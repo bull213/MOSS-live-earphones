@@ -1,4 +1,4 @@
-# Dual-Mode Native Android AI Visual Assistant
+# Private Remote Cellular Connectivity for AI Visual Assistant
 
 *   **Author:** bull213
 *   **Status:** Draft
@@ -8,483 +8,297 @@
 
 ## Overview
 
-This project migrates the **Airflow / AI Visual Assistant** from a Windows PC-dependent architecture (FastAPI on Uvicorn + ADB reverse port forwarding over port 8000) into a **self-contained Android application** operating independently on a Samsung Galaxy S24+ phone.
+This project establishes private, zero-cost remote connectivity between the AI Visual Assistant Android application (`com.visualassistant.app`) and an always-on Windows PC development server over 4G/5G mobile cellular networks. 
 
-The application operates in two distinct modes configured via a single toggle in the application settings:
-1. **Standalone Mobile Mode (Default)**: The phone handles all local processing (offline speech recognition via Moonshine STT, image normalization, conversation persistence, hardware audio routing) on-device and connects directly to cloud AI services (OpenAI Vision, StepFun, MOSS Live Realtime, and Google NotebookLM) over TLS 1.3 HTTPS and WSS connections. No PC, USB cable, ADB reverse tunnel, or local network discovery is required.
-2. **Workstation Mode (Optional)**: For development, debugging, and desktop testing, the phone can route requests through the existing Windows PC FastAPI backend on port 8000 (`127.0.0.1:8000` via ADB or local Wi-Fi).
-
-All document and book intelligence (PDFs, manuals, reference texts) is delegated entirely to **Google NotebookLM**. The phone does not store, parse, index, or calculate vector embeddings for raw source documents. Users maintain their reference books inside their personal Google NotebookLM notebooks, and the phone queries them directly to vocalize grounded answers.
+By eliminating the dependency on local Wi-Fi local-area-network proximity and physical USB tethering cables without requiring auxiliary VPN apps on the phone, the system enables an older adult user to experience the visual assistant anywhere outside the home while keeping document intelligence, personal SQLite history, and server-side speech relay anchored to their personal home computer.
 
 --------------------------------------------------------------------------------
 
 ## The Problem
 
-The current visual assistant requires a running Windows PC executing a Python FastAPI backend on port 8000. For the phone to operate, it must either remain connected via a physical USB cable with `adb reverse tcp:8000 tcp:8000` configured, or run automated local network subnet scanning (`ServerScanner`) to locate the PC on private Wi-Fi.
+The AI Visual Assistant currently connects the Android smartphone to the Python FastAPI backend (`app.main:app`) via two tightly coupled local transport pathways:
+1. **USB ADB Reverse Tunneling**: Requiring a physical cable mapping `tcp:8000 -> 127.0.0.1:8000`.
+2. **Local Wi-Fi Subnet Scanning (`ServerScanner.kt`)**: Probing local private IP addresses (`192.168.x.x`, `10.x.x.x`) on the same local area network or phone hotspot.
 
-This topology creates significant friction:
-1. **Zero Mobility**: The user cannot use the visual assistant outside their home or away from the workstation.
-2. **Complex Failure Chains**: Any network change, computer sleep state, firewall rule change, or ADB disconnect crashes the assistant.
-3. **Redundant Server Relay**: The FastAPI server primarily acts as a pass-through relay for external cloud APIs (OpenAI, StepFun, MOSS Live).
-4. **Heavy Mobile Ingestion Burden**: Attempting to parse raw PDFs, run OCR, and compute 384-dimensional vector embeddings on-device causes thermal throttling, memory spikes, and potential `OutOfMemoryError` crashes on the phone.
-
-The proposed solution migrates all orchestration, WebSocket streaming, image preprocessing, and direct cloud API integration into native Kotlin on Android, while offloading all document and book intelligence to Google NotebookLM.
+When the user leaves home or disconnects from local Wi-Fi to use cellular mobile data (4G/5G):
+* **Zero Cellular Reachability**: Residential internet routers and mobile carrier networks operate under Carrier-Grade NAT (CGNAT) and stateful firewalls, blocking direct inbound traffic to the PC's private IP.
+* **Strict Application Constraints**: The user cannot be burdened with downloading, installing, or managing third-party mesh VPN clients (e.g., Tailscale, WireGuard, ZeroTier) or dealing with VPN configuration profiles on their phone.
+* **Hardcoded Port 8000 Defect**: The existing Android networking code unconditionally appends `:8000` to server addresses lacking explicit colons. When a remote HTTPS/WSS URL is entered, the app attempts to connect to port 8000 instead of standard HTTPS port 443, causing universal connection timeouts over cellular data.
+* **Cost and Quota Bottlenecks**: Free-tier proxy tools such as Ngrok impose strict monthly transfer limits (1 GB/month), which are exhausted in less than 2 hours of full-duplex PCM audio and 1500ms JPEG camera streaming (~580 MiB/hour). Cloud hosting on platforms like AWS or Fly.io incurs recurring monthly compute fees and compromises local document sovereignty.
 
 --------------------------------------------------------------------------------
 
 ## Goals
 
-*   **G1: 100% PC Independence**: The application must execute all core features on a Samsung Galaxy S24+ with the PC turned completely off, requiring zero USB connections, ADB tunnels, or local network scans.
-*   **G2: Direct MOSS Live Duplex Audio/Video**: Android must connect directly to `wss://api.mosi.cn/v1/realtime` with 16 kHz mono PCM uplink, 48 kHz mono PCM downlink, continuous 1500ms tagged JPEG camera heartbeat, and playback chunk acknowledgements.
-*   **G3: Direct Cloud Vision & Chat**: Android must communicate directly with OpenAI Vision (`gpt-6.1-terra`) and StepFun (`step-5-preview`) over HTTPS with structured response parsing.
-*   **G4: Offloaded Document Intelligence via NotebookLM**: All document, book, and manual handling must be handled by Google NotebookLM. The phone does not store or process raw book files. Standalone mobile mode connects via an in-app Google login session (with desktop QR sync fallback).
-*   **G5: Zero Offline Voice Degradation**: Bundled on-device Moonshine Small Streaming STT and WebRTC VAD must remain 100% functional without an internet connection.
-*   **G6: Seamless Hands-Free Switching**: Hands-free voice switching between MOSS Live, NotebookLM collections, and Moonshine STT must be fully preserved via pure-Kotlin catalog matching and a single persistent `AudioRecord` capture router.
-*   **G7: Secure On-Device Key Storage**: All provider API keys (OpenAI, StepFun, MOSS Live) must be encrypted using Android Keystore-backed `EncryptedSharedPreferences` (AES-256-GCM).
-*   **G8: Preserved Workstation Mode**: The existing PC backend and launcher scripts must remain intact, and the Android app must retain an optional settings toggle to route traffic through `127.0.0.1:8000` when desired.
+*   **G1: Zero Auxiliary Phone Software**: The user only installs and interacts with the AI Visual Assistant Android app. No secondary VPN clients, certificates, or background proxy tools are required on the phone.
+*   **G2: Zero Financial Cost ($0.00/month)**: The remote transport operates entirely on unmetered free tiers (Cloudflare persistent outbound tunnel) without recurring cloud hosting, bandwidth fees, or subscription charges.
+*   **G3: Full 6-Mode Feature Parity over Cellular**:
+    *   MOSS Live full-duplex conversational voice (16 kHz mono PCM uplink, 48 kHz mono PCM downlink) over secure WebSockets (`wss://`).
+    *   Continuous visual awareness via 1500ms JPEG camera frame streaming (`0x01` + JPEG byte packets).
+    *   Multipart HTTP assistant photo and question turns (`POST /v1/assistant/turns`).
+    *   Ephemeral photo caching and cross-turn retrieval.
+    *   Google NotebookLM grounded queries with up to 45.0s long-poll latency.
+    *   Bundled offline Moonshine STT speech recognition.
+*   **G4: Android Remote Endpoint Normalization**: Correct host parsing in `BackendEndpoint.kt`, `ServerScanner.kt`, `LiveAssistant.kt`, and `MossLiveTransport.kt` to route remote domains and `https://` / `wss://` endpoints directly over standard port 443 without appending `:8000`.
+*   **G5: Persistent Host Service Automation**: Package the outbound reverse tunnel daemon (`cloudflared`) as an always-on Windows background service that automatically launches on system boot alongside the FastAPI backend without requiring active user desktop logins.
+*   **G6: Application-Layer Access Control**: Protect all remote HTTP and WebSocket endpoints with a 256-bit cryptographic Bearer token (`API_BEARER_TOKEN`) validated via constant-time comparison, while preserving unauthenticated loopback health probes (`/health`).
+*   **G7: Architectural Invariant Preservation**:
+    *   *Host Loopback Isolation*: The FastAPI backend binds exclusively to `127.0.0.1:8000`; no inbound ports are opened on the home internet router.
+    *   *Zero Credential Leakage*: Third-party API keys (`MOSS_API_KEY`, `OPENAI_API_KEY`, `STEPFUN_API_KEY`) remain strictly sealed in the server's `.env` file and are never sent to the mobile client.
+    *   *Local Privacy Tiers*: Ingested reference books, SQLite FTS5 search indexes, MiniLM vector models, and Google NotebookLM browser session state remain 100% sovereign on the local PC.
 
 --------------------------------------------------------------------------------
 
 ## Non-Goals
 
-*   **NG1: On-Device Raw Book Ingestion & Parsing**: The Android app will not parse raw PDF files, render page bitmaps, run OCR, or generate local vector embeddings. All book handling is handled by Google NotebookLM.
-*   **NG2: Embedded Python Runtime**: No Python interpreter (e.g., Chaquopy or Pyodide) will be packaged into the Android APK.
-*   **NG3: Complete Offline Operation for Cloud AI**: The migration achieves independence from the PC, not 100% offline cloud intelligence. Cloud AI services (OpenAI, StepFun, MOSS, NotebookLM) continue to require internet access.
-*   **NG4: Mandatory Paid Server Hosting**: The user is not required to deploy or pay for an intermediate cloud server or proxy. All standalone operations occur directly between the phone and provider endpoints.
-*   **NG5: Database Schema Invalidation**: Existing user conversations and photos stored in `conversations.db` (Room v3) must be preserved without data loss or database wiping.
+*   **NG1: Router Port Forwarding / UPnP**: Opening inbound ports on home residential routers or configuring dynamic DNS (DDNS) records.
+*   **NG2: Cloud Hosting Deployment**: Migrating FastAPI or backend data storage to third-party public cloud providers (e.g., AWS, GCP, Fly.io, Railway).
+*   **NG3: Mobile VPN Service Implementation**: Creating an internal Android `VpnService` or embedding WireGuard tunnels inside the APK.
+*   **NG4: Offline Cloud Intelligence**: Running OpenAI, StepFun, or MOSS Live speech models completely offline on the phone when cellular connectivity is severed.
 
 --------------------------------------------------------------------------------
 
 ## Open Questions
 
-*   **Question 1: Google Session Cookie Longevity on Mobile**: Google session cookies (`SIDTS`, `__Secure-1PSID`) captured via the in-app WebView typically remain valid for several weeks, but Google may invalidate them upon IP changes or security checks. How should the application alert older adult users when a re-login is required?
-*   **Question 2: Upstream MOSS Cellular Firewalls**: Does MOSS Live (`api.mosi.cn`) restrict connections from specific mobile cellular carrier IP ranges, or is standard TLS 1.3 WebSocket traffic universally accepted?
+*   **Question 1: Domain Configuration vs. Named Quick Tunnels**: Should the setup script support automated registration of a free persistent Cloudflare subdomain, or can an automated tunnel daemon persist an assigned tunnel identifier across reboots?
+*   **Question 2: Cellular Reconnection Backoff Tuning**: What backoff interval best balances fast voice recovery with battery preservation when a mobile device temporarily loses reception in an elevator or basement?
 
 --------------------------------------------------------------------------------
 
 ## Critical User Journeys (CUJs)
 
-### CUJ 1: Standalone Photo & Visual Question (PC Powered Off)
+### CUJ 1: Outside Mobile Assistant Turn (Photo + Question)
+*   **Given**: The user is outside connected exclusively to 4G/5G mobile data with Wi-Fi disabled. The Windows PC is powered on at home with the backend and tunnel services running.
+*   **When**: The user captures a photo of an unfamiliar street sign and asks for an explanation.
+*   **Then**: The Android app sends a `POST /v1/assistant/turns` request to the secure Cloudflare tunnel hostname on port 443 with the Bearer token header. The request routes to the local PC backend, executes the OpenAI/StepFun gateway, and returns the vocalized answer to the phone within 2.5 seconds.
 
-*   **Given**: The user is away from their computer with their Galaxy S24+ connected to 5G cellular or Wi-Fi. The PC backend is powered off.
-*   **When**: The user opens the app, snaps a photo of an unfamiliar appliance in `CameraScreen`, types *"What does this red flashing button mean?"*, and taps Send.
-*   **Then**:
-    1. Android normalizes the photo on-device (clamped to 1600px edge, rotated per EXIF, composited over white).
-    2. `DirectCloudAssistantGateway` dispatches an HTTPS request directly to OpenAI Vision (`gpt-6.1-terra`).
-    3. The assistant returns a concise, structured reply bubble in the chat timeline, and the turn is persisted in `conversations.db` within the 100 MiB rolling memory budget.
+### CUJ 2: Continuous MOSS Live Conversation While Roaming
+*   **Given**: The user starts a hands-free conversational voice session using MOSS Live while walking outdoors over cellular data.
+*   **When**: The mobile phone transitions between two cellular towers, causing a transient TCP socket reset.
+*   **Then**: The Android client detects the disconnection, transitions to a reconnecting state without emitting audio pops or crashing, re-establishes the WebSocket connection to the tunnel endpoint, and resumes conversational duplex streaming.
 
-### CUJ 2: Continuous Duplex MOSS Live with Video (Standalone)
-
-*   **Given**: Standalone Mobile Mode is active. No USB cable is connected.
-*   **When**: The user taps "Start MOSS Live with Video" from the chat timeline.
-*   **Then**:
-    1. `DirectMossLiveTransport` establishes a direct secure WebSocket connection to `wss://api.mosi.cn/v1/realtime?model=moss-live-1.0` with the user's Keystore-stored Bearer token.
-    2. The transport completes the 2-step JSON handshake (`attach_session` &rarr; `session_attached`, `session.update` &rarr; `session.updated`).
-    3. The single physical `AudioRecord` (`PhoneAudioCaptureRouter`) captures 16 kHz PCM audio; `MossEchoSuppressor` applies dynamic speaker AEC; tagged JPEG camera frames stream every 1500ms.
-    4. MOSS downlink audio chunks (48 kHz PCM) play via `MossAudioPlayer` with a 1-frame threshold, acknowledging chunks back to MOSS in real time.
-
-### CUJ 3: Hands-Free Modal Switching to a NotebookLM Collection
-
-*   **Given**: The user is speaking in an active MOSS Live duplex call.
-*   **When**: The user speaks: *"Use notebook Neuroscience, what is the dopamine pathway?"*
-*   **Then**:
-    1. MOSS interim transcript update recognizes the prefix *"Use notebook"*; `MossLiveSessionController` immediately suspends uplink audio and sends `response.cancel`.
-    2. `VoiceCommandClassifier` extracts the target notebook (`Neuroscience`) and the trailing question (`what is the dopamine pathway?`).
-    3. The app displays the grounded badge `[📚 Manual: Neuroscience]`, plays pulsing waiting earcons, and queries Google NotebookLM directly using the captured session cookies.
-    4. Upon receiving the grounded answer, the earcon stops, and Android's `TextToSpeech` vocalizes the 2-sentence summary.
-    5. After a 200ms acoustic decay guard, the microphone opens for follow-up questions, or the user can say *"Back to MOSS"* to resume duplex voice in <100ms.
-
-### CUJ 4: Switching to Workstation Mode for Desktop Development
-
-*   **Given**: The developer attaches the phone to their PC via USB and runs `Start MOSS Live.cmd`.
-*   **When**: The user opens Settings and switches the "Backend Mode" toggle to "Workstation PC".
-*   **Then**:
-    1. `ModeRouter` switches the active transport to `RemotePCAssistantGateway` and `RemotePCMossTransport`, routing traffic to `127.0.0.1:8000`.
-    2. All turns and MOSS sessions route through the PC FastAPI server, allowing inspection of local server logs and desktop Python debugging.
+### CUJ 3: Seamless Home/Away Fallback
+*   **Given**: The user returns home, and the phone reconnects to home Wi-Fi or is plugged into USB for charging.
+*   **When**: The app initiates communication with the backend.
+*   **Then**: The app probes USB loopback and local Wi-Fi first. If available, it uses the zero-latency local route; if disconnected, it routes over the remote tunnel URL without user intervention.
 
 --------------------------------------------------------------------------------
 
 ## Technical Plan (Architecture)
 
-### 1. Architectural Overview & Component Structure
-
-The target architecture is a **Dual-Mode Native Android System**. A clean interface-based abstraction (`BackendModeRouter`) decouples the presentation layer from network transport details, allowing instant runtime switching between **Standalone Mobile Mode** and **Workstation PC Mode**.
+### 1. End-to-End System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph MobileDevice["Samsung Galaxy S24+ (com.visualassistant.app)"]
-        subgraph UI["Presentation Layer (Jetpack Compose)"]
-            ChatUI["Chat Timeline & Composer\n(Recent Memory Budget 100 MiB)"]
-            CameraUI["Camera Preview & Snapper\n(CameraX, EXIF Strip, White Canvas)"]
-            SettingsUI["Settings Screen\n(Mode Toggle | BYOK Keys | QR Scanner)"]
-            GoogleLoginUI["In-App Google Login WebView\n(Cookie Extraction: SIDTS, PSID)"]
-        end
+    subgraph MobileDevice["Android Phone (com.visualassistant.app)"]
+        UI["Compose Chat UI & Settings"]
+        Endpoint["BackendEndpoint\n(Smart Port & Scheme Normalizer)"]
+        Scanner["ServerScanner\n(Multi-Tier Transport Probe)"]
+        MOSSClient["OkHttpMossLiveTransport\n(WebSocket Duplex + Binary Audio/Video)"]
+        HTTPClient["AssistantApi / NotebookAuthApi\n(Multipart HTTP + Bearer Token)"]
 
-        subgraph AudioPipeline["Unified Hardware Audio Pipeline"]
-            AudioRouter["PhoneAudioCaptureRouter\n(Single 16kHz AudioRecord Instance)"]
-            MoonshineSTT["Moonshine Small Streaming\n(Bundled ONNX + WebRTC VAD)"]
-            MossPlayer["MossAudioPlayer\n(48kHz AudioTrack, 1-Frame Threshold)"]
-            EchoSuppressor["MossEchoSuppressor\n(Dynamic AEC + 200ms Decay Guard)"]
-            AudioRouter -->|VOICE| MoonshineSTT
-            AudioRouter -->|MOSS| EchoSuppressor
-        end
-
-        subgraph CoreRouting["Backend Mode Router"]
-            ModeRouter["BackendModeRouter\n(Dispatches to Active Gateway Implementation)"]
-        end
-
-        subgraph StandaloneGateways["Standalone Mobile Implementation (Pure Kotlin)"]
-            DirectAssistant["DirectCloudAssistantGateway\n(OkHttp -> OpenAI & StepFun)"]
-            DirectMoss["DirectMossLiveTransport\n(OkHttp WSS -> wss://api.mosi.cn)"]
-            DirectNLM["DirectMobileNotebookLMClient\n(Cookie-Authenticated Google RPCs)"]
-            KeystoreManager["SecureCredentialStore\n(Android Keystore Encrypted AES-256)"]
-        end
-
-        subgraph WorkstationGateways["Workstation PC Implementation"]
-            RemoteAssistant["RemotePCAssistantGateway\n(POST 127.0.0.1:8000/v1/assistant/turns)"]
-            RemoteMoss["RemotePCMossTransport\n(WS 127.0.0.1:8000/v1/realtime/moss-live)"]
-            RemoteNLM["RemotePCNotebookLMClient\n(127.0.0.1:8000 NotebookLM Proxy)"]
-        end
-
-        subgraph Persistence["Local Storage Layer"]
-            ConversationsDB[("conversations.db (Room v3)\nChats, Turns, Photo Metadata")]
-            PhotoFiles["files/conversation_photos/\nApp-Private Normalized JPEGs"]
-        end
-
-        ChatUI --> ModeRouter
-        ModeRouter -->|Standalone Mode| DirectAssistant
-        ModeRouter -->|Standalone Mode| DirectMoss
-        ModeRouter -->|Standalone Mode| DirectNLM
-        ModeRouter -->|Workstation Mode| RemoteAssistant
-        ModeRouter -->|Workstation Mode| RemoteMoss
-        ModeRouter -->|Workstation Mode| RemoteNLM
-
-        SettingsUI --> KeystoreManager
-        SettingsUI --> GoogleLoginUI
-        GoogleLoginUI --> DirectNLM
-        DirectMoss --> EchoSuppressor
-        DirectMoss --> MossPlayer
-        ChatUI --> ConversationsDB
-        CameraUI --> PhotoFiles
+        UI --> Endpoint
+        Endpoint --> Scanner
+        Scanner --> HTTPClient
+        Scanner --> MOSSClient
     end
 
-    subgraph ExternalCloud["Cloud AI Providers (Direct HTTPS / WSS)"]
-        OpenAICloud["OpenAI Vision API\n(gpt-6.1-terra via HTTPS)"]
-        StepFunCloud["StepFun API\n(step-5-preview via HTTPS)"]
-        MOSSCloud["MOSS Realtime Service\n(wss://api.mosi.cn/v1/realtime)"]
-        GoogleNLM["Google NotebookLM\n(Internal Web RPCs)"]
+    subgraph CellularNetwork["Public Cellular Network (4G/5G CGNAT)"]
+        CellRadio["Carrier Radio Network\n(Dynamic Public IPv4/IPv6)"]
+        MOSSClient -. WSS / Port 443 .-> CellRadio
+        HTTPClient -. HTTPS / Port 443 .-> CellRadio
     end
 
-    subgraph OptionalPC["Optional Development Workstation (127.0.0.1:8000)"]
-        FastAPIServer["FastAPI Backend (app.main:app)\nUvicorn on Port 8000"]
+    subgraph CloudflareEdge["Cloudflare Global Anycast Edge (Zero Cost)"]
+        Edge["Public Edge Proxy\n(Terminates Public TLS on 443)\n(Unmetered Transit, Zero Port Forwarding)"]
+        CellRadio -. TLS 1.3 .-> Edge
     end
 
-    DirectAssistant -. Direct HTTPS .-> OpenAICloud
-    DirectAssistant -. Direct HTTPS .-> StepFunCloud
-    DirectMoss -. Direct WSS .-> MOSSCloud
-    DirectNLM -. Direct HTTPS (Cookies) .-> GoogleNLM
-    RemoteAssistant -. ADB / Wi-Fi .-> FastAPIServer
-    RemoteMoss -. ADB / Wi-Fi .-> FastAPIServer
-    RemoteNLM -. ADB / Wi-Fi .-> FastAPIServer
+    subgraph WindowsHost["Home Windows PC (Always-On)"]
+        TunnelService["cloudflared Service\n(Persistent Outbound QUIC/HTTP2 Tunnel)\n(Runs as SYSTEM Background Service)"]
+        FastAPI["FastAPI Backend (127.0.0.1:8000)\n(Bound strictly to Loopback)"]
+        AuthMiddleware["RequestMiddleware\n(Constant-Time Bearer Auth)"]
+        MOSSRelay["MOSS Live WebSocket Relay\n(Session Anchor & Upstream Buffer)"]
+        LocalData[("Local Document Index\nSQLite FTS5 + MiniLM Embeddings")]
+        NotebookLM["NotebookLM Coprocessor\n(Persistent Browser Profile)"]
+
+        Edge <== Multiplexed Outbound Tunnel ==> TunnelService
+        TunnelService -. HTTP/WS (127.0.0.1:8000) .-> FastAPI
+        FastAPI --> AuthMiddleware
+        FastAPI --> MOSSRelay
+        FastAPI --> LocalData
+        FastAPI --> NotebookLM
+    end
+
+    subgraph UpstreamCloud["External AI Providers"]
+        MOSSUpstream["MOSS Realtime Gateway\n(wss://api.mosi.cn/v1/realtime)"]
+        OpenAIUpstream["OpenAI Vision API\n(gpt-6.1-terra)"]
+        StepFunUpstream["StepFun Gateway\n(step-5-preview)"]
+
+        MOSSRelay -. Upstream WSS .-> MOSSUpstream
+        FastAPI -. HTTPS RPC .-> OpenAIUpstream
+        FastAPI -. HTTPS RPC .-> StepFunUpstream
+    end
 ```
 
----
+### 2. Network Protocol and Communication Specification
 
-### 2. Subsystem Technical Specifications
+The remote communication channel operates exclusively over standard web ports (`443`) terminated by Cloudflare's edge proxy, preventing firewall rejections on cellular carriers.
 
-#### 2.1 Mode Routing & Interface Abstraction
-To ensure zero code duplication and seamless mode switching, the application abstracts all backend operations behind three pure Kotlin interfaces:
-```kotlin
-interface AssistantGateway {
-    suspend fun answer(question: String, photo: ByteArray?, history: List<ChatMessage>): AssistantReply
-}
+1. **HTTP Endpoints (HTTPS on Port 443)**:
+   * `GET /health`: Probed without credentials by `ServerScanner.isHealthOkUrl` with a 5000ms timeout to verify connectivity.
+   * `POST /v1/assistant/turns`: Multipart form data containing user text, audio transcripts, rolling photos, and conversation history. Authenticated via header `Authorization: Bearer <API_BEARER_TOKEN>`.
+   * `POST /v1/assistant/photos/upload`: Ephemeral image staging for multi-turn visual memory.
+   * `GET/POST /v1/notebooklm/*`: Grounded book discussion and notebook status queries. Supports long-poll timeouts up to 45.0 seconds (well within Cloudflare's 100-second HTTP proxy timeout).
 
-interface MossLiveTransport {
-    fun connect(listener: MossLiveTransportListener)
-    fun sendText(text: String): Boolean
-    fun sendBinary(bytes: ByteArray): Boolean
-    fun close(code: Int = 1000, reason: String = "Session closed")
-    fun isOpen(): Boolean
-}
+2. **WebSocket Realtime Stream (WSS on Port 443)**:
+   * `WSS /v1/realtime/moss-live`: Bidirectional full-duplex PCM audio and camera frame relay.
+   * *Authentication*: Passed via initial WebSocket upgrade header `Authorization: Bearer <token>` or connection query parameter `?token=<token>`.
+   * *Binary Multiplexing*:
+     * Audio Uplink: 16 kHz 16-bit mono PCM chunks (~640 bytes / 20ms).
+     * Audio Downlink: 48 kHz 16-bit mono PCM chunks (~1920 bytes / 20ms).
+     * Video Camera Stream: Raw JPEG byte packets prefixed with single-byte header `0x01`, transmitted every 1500ms.
+   * *Keep-Alive*: Inherent active traffic every 20ms–1500ms eliminates Cloudflare's 100-second idle connection drops. In suspended mode (when switching to NotebookLM), a 15-second ping heartbeat maintains socket state.
 
-interface NotebookLMClient {
-    suspend fun listNotebooks(): List<NotebookItem>
-    suspend fun askChat(notebookId: String, query: String): GroundedChatResult
-    fun hasAuth(): Boolean
-}
-```
-`BackendModeRouter` holds the active implementation references. When the user flips the toggle in Settings, `ModeRouter` switches the active instances in memory without restarting the application or modifying UI state machines.
+### 3. Android Client Architecture & Defect Remediation
 
-#### 2.2 Direct Cloud Assistant Gateway (`DirectCloudAssistantGateway.kt`)
-*   **Endpoint URLs**:
-    *   OpenAI: `https://api.openai.com/v1/chat/completions` (or `/v1/responses`) with model `gpt-6.1-terra`.
-    *   StepFun: `https://api.stepfun.ai/v1/chat/completions` (or regional endpoint) with model `step-5-preview`.
-*   **Prompt Construction**:
-    *   Replicates `INSTRUCTIONS` and `VISUAL_WITH_HISTORY_INSTRUCTIONS` exactly from `backend/app/assistant.py`.
-    *   Enforces 60-word limits, step-by-step physical guidance, and action schema formatting (`answer`, `do_step`, `take_photo`, `clarify`, `complete`, `stop`).
-    *   Assembles bounded history: up to 8 turns, maximum 4,000 characters total.
-*   **Image Normalization Parity (`BitmapUtils.kt`)**:
-    *   Clamps maximum edge to 1600px maintaining aspect ratio.
-    *   Transposes orientation from EXIF metadata.
-    *   Composites transparent PNGs onto a solid white canvas to prevent black backgrounds:
-        ```kotlin
-        val cleanBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-        val canvas = Canvas(cleanBitmap).apply { drawColor(Color.WHITE) }
-        canvas.drawBitmap(sourceBitmap, 0f, 0f, null)
-        cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outputStream)
-        ```
-    *   Compresses to JPEG quality 85.
+#### Component 1: `BackendEndpoint.kt` Normalization
+* **Problem**: Host string sanitization previously assumed local IP addresses and stripped schemes improperly, or failed to handle bare hostnames.
+* **Solution**: Implement intelligent endpoint normalization:
+  * Detect whether the configured host is a local loopback (`127.0.0.1`), a local LAN/hotspot IP (`192.168.x.x`, `10.x.x.x`), a Tailscale IP (`100.x.x.x`), or a remote domain (`.trycloudflare.com`, `.ts.net`, or custom domain).
+  * If a scheme is explicitly provided (`https://` or `http://`), preserve the scheme.
+  * If the host contains an explicit port (e.g., `192.168.43.18:8000`), preserve that port.
+  * If the host is a remote domain without an explicit port, use standard HTTPS/WSS (port 443) and **NEVER append `:8000`**.
+  * Provide clean `httpUrl(path)` and `wsUrl(path)` builders that format correctly for both HTTP/HTTPS and WS/WSS.
 
-#### 2.3 Direct MOSS Live Realtime Transport (`DirectMossLiveTransport.kt`)
-*   **Connection**: OkHttp WebSocket connecting directly to `wss://api.mosi.cn/v1/realtime?model=moss-live-1.0`.
-*   **Authentication**: Injects `Authorization: Bearer <moss_api_key>` in the WebSocket upgrade HTTP request headers.
-*   **Initialization Handshake**:
-    1. Outgoing on open: `{"action": "attach_session", "session_id": null}`.
-    2. Incoming: `{"action": "session_attached", ...}`.
-    3. Outgoing: `{"action": "session.update", "session": {"instructions": "..."}}`.
-    4. Incoming: `{"action": "session.updated", ...}` &rarr; Trigger `onOpen()` callback to `MossLiveSessionController`.
-*   **Streaming & Protocol**:
-    *   Audio Uplink: 16 kHz mono PCM S16LE tagged with `0x00` byte prefix.
-    *   Camera Uplink: JPEG compressed frames tagged with `0x01` byte prefix, streamed with a continuous 1500ms background heartbeat coroutine.
-    *   Audio Downlink: 48 kHz mono PCM S16LE chunks received and fed into `MossAudioPlayer` (`AudioTrack` configured with a 1-frame start threshold).
-    *   Acknowledgements: Transmits `playback.chunk.completed` and `playback.completed` matching provider run and turn IDs.
-*   **Quiescent Suspension & Keepalive**:
-    *   When switching to NotebookLM, `suspendAudio()` sends `{"action": "mic_state", "enabled": false}` and `{"action": "video.state", "enabled": false}`.
-    *   Maintains a 15-second ping coroutine (`{"action": "ping"}`) during suspension.
-    *   Closes cleanly (`code=1000`) after a 60-second quiescence timeout, auto-reconnecting transparently upon return.
+#### Component 2: `ServerScanner.kt` Remote Probing
+* **Problem**: `ServerScanner.verifyHost()` performs a raw TCP socket connection to port 8000 before attempting `/health`. For remote cloud tunnels listening on port 443, the raw socket probe to port 8000 fails immediately. Furthermore, the previous 1200ms timeout was too aggressive for cellular latency.
+* **Solution**:
+  * If `isRemoteHost(host)` is true, bypass raw TCP socket probing on port 8000.
+  * Probe `https://<host>/health` directly with a 5000ms connection and read timeout.
+  * Strip the conditional logic in `ServerScanner` that appended `:8000` to resolved hosts.
 
-#### 2.4 Option C NotebookLM Mobile Client (`DirectMobileNotebookLMClient.kt`)
-*   **Authentication & In-App Sign-In (`NotebookSignInActivity.kt`)**:
-    *   Hosts an Android `WebView` pointing to `https://accounts.google.com`.
-    *   Configures `WebSettings.userAgentString` to match the system Chrome Mobile browser string to prevent Google 403 `disallowed_useragent` blocks.
-    *   Extracts session cookies (`SIDTS`, `__Secure-1PSID`, `__Secure-1PAPISID`) via `CookieManager.getInstance().getCookie(...)` upon successful navigation to `notebooklm.google.com`.
-    *   Persists cookies encrypted in `SecureCredentialStore`.
-*   **Desktop QR Code Sync Fallback**:
-    *   When Workstation Mode is active, a helper command on the PC (`Show Auth QR.cmd`) displays a local terminal or browser QR code encoding the valid session cookies from `storage_state.json`.
-    *   The phone camera scans the QR code in Settings, immediately importing Google credentials without requiring manual typing or in-app webview login.
-*   **Direct RPC Execution**:
-    *   Sends authenticated HTTP requests directly to Google's internal web RPC endpoints (`https://notebooklm.google.com/_/NotebooklmUi/data/batchexecute`).
-    *   Sanitizes grounded answers: strips markdown citations (`[1]`, `[2]`), footnotes, and asterisks for smooth TTS vocalization.
+#### Component 3: `LiveAssistant.kt` & `MossLiveTransport.kt` Port Fixes
+* **Problem**: Both classes contain duplicate logic: `val fullHost = if (resolved.contains(":")) resolved else "$resolved:8000"`.
+* **Solution**: Delegate host resolution directly to `BackendEndpoint.normalizeHost(host)` so no class independently appends `:8000`.
 
-#### 2.5 Hardware Audio Pipeline & Single Capture Router
-*   `PhoneAudioCaptureRouter`: Maintains a **single physical `AudioRecord` instance** (16 kHz mono PCM S16LE, `VOICE_COMMUNICATION` audio source). It continuously streams frames in memory to active destinations:
-    *   `AudioDestination.MOSS`: Passes raw PCM through `MossEchoSuppressor` to WebSocket uplink.
-    *   `AudioDestination.VOICE`: Converts raw PCM to normalized floats for Moonshine STT / WebRTC VAD.
-    *   `AudioDestination.MUTED`: Drops frames to preserve hardware initialization.
-*   `MossEchoSuppressor`: Dynamically zeroes uplink audio during speaker playback with a 200ms room reverberation decay grace period; completely bypassed when Bluetooth SCO or wired headphones are connected.
+#### Component 4: `MossLiveSessionController.kt` Cellular Reconnect Loop
+* **Mechanism**:
+  * On unexpected WebSocket closure (e.g. mobile cell tower handover, code `1006`), transition the session state to `RECONNECTING`.
+  * Trigger an exponential backoff retry loop (attempt 1: 500ms, attempt 2: 1500ms, attempt 3: 3000ms).
+  * If reconnection succeeds within the window, re-attach to the server session and resume duplex audio without tearing down the UI or resetting conversation turns.
 
-#### 2.6 BYOK Security & Senior-Friendly Settings Screen
-*   `SecureCredentialStore`: Encapsulates `EncryptedSharedPreferences` backed by the hardware-isolated Android Keystore (`MasterKey` with AES-256-GCM).
-*   `SettingsScreen`:
-    *   **Backend Mode Switch**: "Standalone Mobile" (Default) vs "Workstation PC".
-    *   **Assistive Key Entry**:
-        1. One-tap **Clipboard Paste** with visual validation checkmarks (`✓ Key Valid`).
-        2. **Camera Key Scanner**: Uses bundled offline Google ML Kit Latin OCR to scan printed API keys or computer screens.
-        3. **PC Sync Button**: Automatically syncs keys from `backend/.env` over local loopback when attached to the PC.
+### 4. Windows Host Automation & Service Lifecycle
+
+#### Component 1: Cloudflare Tunnel Daemon (`cloudflared`)
+* Installed silently via Windows Package Manager:
+  `winget install --id Cloudflare.cloudflared --exact --silent`
+* Executed as a persistent Windows Service:
+  `cloudflared service install`
+* Configuration file (`%USERPROFILE%\.cloudflared\config.yml`):
+  Routes incoming tunnel requests to local loopback:
+  ```yaml
+  ingress:
+    - service: http://127.0.0.1:8000
+  ```
+
+#### Component 2: Deployment Automation Script (`scripts/setup_remote_tunnel.ps1`)
+A self-contained, idempotent PowerShell script that:
+1. Verifies administrative permissions and elevates if needed.
+2. Generates a cryptographically strong 256-bit `API_BEARER_TOKEN` and writes it to `backend/.env` if not already set.
+3. Installs `cloudflared.exe` if absent.
+4. Registers or starts the tunnel process.
+5. Verifies local loopback reachability by querying `http://127.0.0.1:8000/health`.
+6. Prints a clean, copy-pasteable configuration summary containing the public URL and Bearer token for entry into the Android app.
 
 --------------------------------------------------------------------------------
 
 ## Alternatives Considered
 
-### Alternative A: Embedded Python Backend on Android (Chaquopy / Termux)
+### Alternative A: Ngrok Free Tier Reverse Proxy
+*   **Pros**: Simple command-line invocation (`ngrok http 8000`); automatic SSL certificate issuance.
+*   **Cons**: Free tier enforces a strict 1 GB/month bandwidth cap and 20,000 requests/month limit. Injects HTML interstitial warning pages on non-standard HTTP client requests unless bypassed via custom headers.
+*   **Reason for Rejection**: *Rejected by author*: Full-duplex MOSS Live PCM streaming (16 kHz uplink, 48 kHz downlink) and 1500ms JPEG video frames generate ~580 MiB per hour. Ngrok's entire monthly free quota is completely depleted in approximately 1.7 hours of active use.
 
-*   **Pros**: Reuses existing Python code without rewrite.
-*   **Cons**: Adds >150 MB to APK size; Python VM + PyTorch + Uvicorn requires 450–800 MB RAM; 5–8 second cold-start latency; Android OS freezes background threads; severe battery drain and thermal throttling; frequently triggers Android Low Memory Killer during camera streaming.
-*   **Reason for Rejection**: `Rejected by author: Catastrophic memory footprint (>500 MB) and cold-start latency (5-8s) on mobile; conflicts with Android process lifecycle and triggers LMK during camera streaming.`
+### Alternative B: Router Port-Forwarding with Dynamic DNS (DDNS)
+*   **Pros**: Direct peer-to-peer connection without an intermediary third-party relay; unmetered bandwidth.
+*   **Cons**: Exposes a private Windows development machine directly to public internet port scanners and automated botnet attacks; fails completely on ISPs utilizing Carrier-Grade NAT (CGNAT) without purchasing static public IPv4 addresses; requires manual configuration of router admin consoles; requires manual ACME / Let's Encrypt TLS certificate lifecycle and renewal on Windows.
+*   **Reason for Rejection**: *Rejected by author*: Unacceptable attack surface exposure on home hardware, carrier incompatibility under CGNAT, and extreme setup friction for non-technical users.
 
-### Alternative B: On-Device Raw Book Parsing & Vector Index (SQLite FTS5 + ONNX MiniLM)
+### Alternative C: Third-Party Mesh VPN Client on Mobile (Tailscale / WireGuard)
+*   **Pros**: End-to-end WireGuard cryptographic encryption; automatic NAT traversal; keeps backend completely hidden from the public internet without Bearer tokens.
+*   **Cons**: Requires downloading, installing, configuring, and maintaining a secondary VPN application on the user's phone; requires managing authentication accounts, keys, and background battery optimization exemptions.
+*   **Reason for Rejection**: *Rejected by author*: Explicitly violates the non-negotiable architectural constraint: "Everything must be inside my app. I don't want to download other stuff, except my app, to my phone."
 
-*   **Pros**: 100% offline document search without Google account dependency.
-*   **Cons**: Requires raw file storage on device, native PDF parsing library, vector embedding computation, and duplicate document library management.
-*   **Reason for Rejection**: `Rejected by author: User explicitly instructed that Google NotebookLM will handle all PDFs and books, eliminating the need for the mobile application to store or process raw book sources.`
-
-### Alternative C: On-Device PDF Image OCR Pipeline (ML Kit Latin OCR / Tesseract)
-
-*   **Pros**: Capable of indexing scanned image-only PDF books.
-*   **Cons**: Extreme CPU and GPU load; renders heavy page bitmaps causing memory spikes; slow ingestion; high thermal load and battery drain.
-*   **Reason for Rejection**: `Rejected by author: Explicitly deleted from project scope to keep the application lightweight, fast, and focused on visual assistance and duplex conversation.`
-
-### Alternative D: Single-Mode Permanent Removal of PC Backend
-
-*   **Pros**: Simpler codebase; deletes all legacy loopback and server discovery code.
-*   **Cons**: Removes desktop debugging, terminal logging, and offline developer test capabilities on the workstation.
-*   **Reason for Rejection**: `Rejected by author: User explicitly requested retaining the ability to use the PC backend when connected for development, testing, and troubleshooting.`
-
-### Alternative E: Intermediate Cloud Token Broker / KMS Server
-
-*   **Pros**: Eliminates client-side API key storage; enables short-lived ephemeral tokens.
-*   **Cons**: Violates the user's requirement for a self-contained prototype without external server infrastructure; introduces recurring cloud hosting costs, server maintenance, and an additional single point of failure.
-*   **Reason for Rejection**: `Rejected by author: Introduces unnecessary recurring infrastructure costs and server maintenance for a personal prototype; on-device hardware Keystore encryption (AES-256-GCM) provides sufficient local security.`
-
---------------------------------------------------------------------------------
-
-## Non-Functional Requirements
-
-### 1. Security & Privacy
-*   **BYOK Credential Protection**: User API keys (OpenAI, StepFun, MOSS Live) and Google session cookies are encrypted with AES-256-GCM using keys stored in the hardware-backed Android Keystore. Key material is never written to plain text, SharedPreferences, or log output.
-*   **Network Transport**: All external network traffic is encrypted via TLS 1.3 HTTPS (`api.openai.com`, `api.stepfun.ai`, `notebooklm.google.com`) and WSS (`api.mosi.cn`). Cleartext HTTP traffic is disabled in Standalone mode.
-*   **Camera Privacy**: Reviewed photo snapshots are saved exclusively in app-private storage (`files/conversation_photos/`) with EXIF metadata stripped. Photos are never written to the public Android MediaStore or gallery.
-
-### 2. Performance & Memory Budget
-*   **RAM Footprint**: Under 100 MB resident memory on Galaxy S24+ (down from >500 MB if Python had been embedded).
-*   **Cold Start Latency**: Immediate UI display (<100ms) with zero VM initialization lag.
-*   **Thermal Budget**: Eliminating on-device vector embedding and PDF OCR preserves thermal stability during long-running MOSS Live audio/video duplex sessions.
-*   **Audio Latency**: `MossAudioPlayer` 1-frame threshold ensures immediate speech playback (<20ms start threshold), preventing AudioTrack startup underruns.
-
-### 3. Reliability & Connectivity Handover
-*   **Cellular / Wi-Fi Handover**: `DirectMossLiveTransport` catches socket disconnects during network transitions and triggers exponential backoff reconnection within the 60-second quiescent window.
-*   **Senior-Friendly Error Translation**: Raw HTTP errors (401, 429, 503) are mapped to plain-English spoken and visual guidance (e.g. *"Provider is busy. Please try again in a moment."*).
+### Alternative D: Cloud VPS Backend Deployment (AWS / GCP / Fly.io / Railway)
+*   **Pros**: High server availability independent of home PC power or sleep states; static public IP address.
+*   **Cons**: Incurs ongoing monthly infrastructure costs ($5–$25+/month) for compute, memory, and storage; requires uploading sensitive local document libraries and SQLite databases to third-party cloud disks; breaks Google NotebookLM session synchronization, which relies on persistent local Playwright browser profiles (`storage_state.json`) anchored to the local machine.
+*   **Reason for Rejection**: *Rejected by author*: Violates the zero-cost ($0.00/month) requirement and compromises local document privacy invariants.
 
 --------------------------------------------------------------------------------
 
 ## Detailed Implementation Plan
 
-The implementation is executed as a unified, ordered sequence of file modifications and additions.
+The implementation is partitioned into four distinct phases to ensure testability, safety, and zero regression of existing local Wi-Fi and USB cable modes.
 
-### Target Files to Create / Modify / Delete
+### 1. Touched File Manifest & Rationale
 
-#### 1. `android/app/build.gradle.kts` (Modify)
-*   **Type / Scope**: Android Build Configuration
-*   **Proposed Changes**:
-    *   Add `androidx.security:security-crypto:1.1.0-alpha06` for Keystore-backed AES-256-GCM encrypted storage.
-    *   Add `org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3` for structured JSON model serialization.
-    *   Configure Proguard rules to preserve model schemas and OkHttp WebSocket listeners.
+| File Path | Modification Type | Technical Rationale |
+| :--- | :--- | :--- |
+| `android/app/src/main/java/com/visualassistant/app/network/BackendEndpoint.kt` | Modify | Add intelligent host/URL normalization (`normalizeHost`, `isRemoteHost`). Strip unconditional `:8000` appending for remote domains. Ensure `httpUrl()` and `wsUrl()` correctly format `https://` and `wss://` endpoints over standard port 443. |
+| `android/app/src/main/java/com/visualassistant/app/network/ServerScanner.kt` | Modify | Fix remote health check probing. When the target host is a remote domain, bypass raw TCP socket probing on port 8000 and directly query `https://<host>/health` with a 5000ms timeout. Remove local `:8000` appending. |
+| `android/app/src/main/java/com/visualassistant/app/chat/LiveAssistant.kt` | Modify | Delegate host sanitization and port assignment strictly to `BackendEndpoint.normalizeHost()`, eliminating duplicate and conflicting `:8000` logic. |
+| `android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt` | Modify | Eliminate hardcoded `:8000` appending. Ensure `Authorization: Bearer <token>` header is added to the OkHttp WebSocket connection request, with `?token=<token>` query parameter fallback. |
+| `android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveSessionController.kt` | Modify | Implement exponential backoff reconnect logic (500ms, 1500ms, 3000ms) on unexpected WebSocket drops (e.g. mobile cell tower handover, code `1006`) to preserve live session continuity during outdoor mobility. |
+| `android/app/src/test/java/com/visualassistant/app/network/BackendEndpointTest.kt` | Modify | Expand unit test suite to validate: (1) Remote HTTPS URLs preserve port 443 and do not get `:8000` appended, (2) Local LAN IPs (`192.168.43.18:8000`) retain their explicit ports, (3) `wsUrl()` maps `https://` to `wss://` properly, (4) Bearer token headers format correctly. |
+| `scripts/setup_remote_tunnel.ps1` | Create | Self-elevating PowerShell script that: installs `cloudflared` if absent, generates and synchronizes `API_BEARER_TOKEN` in `backend/.env`, configures the persistent background tunnel service, and verifies loopback health. |
+| `Restart Backend.cmd` | Modify | Ensure the remote tunnel process/service is verified and restarted alongside the FastAPI backend so local and remote transports remain synchronized. |
+| `PROJECT_HANDOFF.md` | Modify | Document the remote cellular architecture, Bearer token access controls, Cloudflare tunnel service lifecycle, and mobile cellular testing procedures in the master engineering handoff. |
 
-#### 2. `android/app/src/main/AndroidManifest.xml` (Modify)
-*   **Type / Scope**: Android Application Manifest
-*   **Proposed Changes**:
-    *   Register `NotebookSignInActivity` with `android:theme="@style/Theme.VisualAssistant"`.
-    *   Add `android:usesCleartextTraffic="false"` for release builds, maintaining cleartext permissions only for loopback (`127.0.0.1`) and local subnets in debug/workstation mode.
+### 2. Execution Phases
 
-#### 3. `android/app/src/main/java/com/visualassistant/app/network/ai/AssistantGateway.kt` (Create)
-*   **Type / Scope**: Kotlin Interface
-*   **Proposed Changes**:
-    *   Defines the abstraction: `suspend fun answer(question: String, photo: ByteArray?, history: List<ChatMessage>): AssistantReply`.
+#### Phase 1: Android Client Network Normalization & Bug Remediation
+1. **Refactor `BackendEndpoint.kt`**:
+   * Implement `normalizeHost(raw: String): String`:
+     * If empty, return `DEFAULT_HOST` (`127.0.0.1:8000`).
+     * If host contains explicit protocol (`http://`, `https://`, `ws://`, `wss://`), extract scheme and host body.
+     * Detect remote hosts: checks if host contains `.trycloudflare.com`, `.ts.net`, top-level domains, or is an explicit domain name without private IP prefixes (`127.`, `192.168.`, `10.`, `172.`).
+     * If remote host lacks an explicit port, do **NOT** append `:8000`. Standardize on port 443.
+     * If private IP lacks an explicit port, default to `:8000`.
+   * Update `httpUrl(path)` and `wsUrl(path)` to respect scheme-awareness without redundant prepending.
+2. **Patch `ServerScanner.kt`**:
+   * In `verifyHost(host)`:
+     * Check `BackendEndpoint.isRemoteHost(host)`. If true, bypass raw socket check on port 8000 (`Socket().connect(InetSocketAddress(host, 8000))`).
+     * Probe `https://<host>/health` via OkHttp client configured with a 5000ms connection timeout and read timeout.
+   * Remove `val fullHost = if (resolvedHost.contains(":")) resolvedHost else "$resolvedHost:8000"`.
+3. **Clean Up `LiveAssistant.kt` & `MossLiveTransport.kt`**:
+   * Replace manual `:8000` checks with calls to `BackendEndpoint.normalizeHost()`.
+4. **Unit Verification**:
+   * Execute `./gradlew testDebugUnitTest --tests com.visualassistant.app.network.BackendEndpointTest`.
 
-#### 4. `android/app/src/main/java/com/visualassistant/app/network/ai/AssistantPromptTemplates.kt` (Create)
-*   **Type / Scope**: Kotlin Constants
-*   **Proposed Changes**:
-    *   Defines `INSTRUCTIONS`, `VISUAL_WITH_HISTORY_INSTRUCTIONS`, and `TEXT_INSTRUCTIONS` identical to `backend/app/assistant.py` to maintain exact cross-platform prompt contract parity.
+#### Phase 2: Cellular Roaming Reconnect Handling
+1. **State Machine Enhancement in `MossLiveSessionController.kt`**:
+   * Introduce a retry counter (`maxRetries = 3`) and backoff intervals (500ms, 1500ms, 3000ms).
+   * In `onTransportClosed(code, reason)`: If code is non-normal (`1006` or network I/O error) and the call was in `ACTIVE_CALL` or `LISTENING` state, launch a coroutine to attempt silent reconnection before calling `fail()`.
+   * On successful reconnect, re-send `session.attach` to resume duplex streaming.
 
-#### 5. `android/app/src/main/java/com/visualassistant/app/network/ai/DirectCloudAssistantGateway.kt` (Create)
-*   **Type / Scope**: Kotlin Service (OkHttp)
-*   **Proposed Changes**:
-    *   Implements `AssistantGateway`.
-    *   Makes direct HTTPS calls to `https://api.openai.com/v1/chat/completions` (OpenAI `gpt-6.1-terra`) and `https://api.stepfun.ai/v1/chat/completions` (StepFun `step-5-preview`).
-    *   Assembles up to 8 history turns (max 4,000 chars) and parses `AssistantReply` (`reply: String`, `action: String`).
+#### Phase 3: Windows Host Service Automation
+1. **Create `scripts/setup_remote_tunnel.ps1`**:
+   * Check for `API_BEARER_TOKEN` in `backend/.env`. If missing, generate a 256-bit secure hex token and append it.
+   * Verify whether `cloudflared.exe` is present in `C:\cloudflared\cloudflared.exe` or system `PATH`. If missing, install via `winget install --id Cloudflare.cloudflared --exact --silent`.
+   * Provide options for both persistent named tunnels and quick tunnels running as a persistent background daemon.
+   * Validate local backend health (`http://127.0.0.1:8000/health`) before starting the tunnel.
+   * Output the exact connection URL and Bearer token formatted for immediate entry into the mobile app settings.
+2. **Update `Restart Backend.cmd`**:
+   * Integrate tunnel status check so developers can verify both backend and tunnel health in a single command.
 
-#### 6. `android/app/src/main/java/com/visualassistant/app/network/ai/RemotePCAssistantGateway.kt` (Create)
-*   **Type / Scope**: Kotlin Service
-*   **Proposed Changes**:
-    *   Implements `AssistantGateway` by forwarding requests to `http://127.0.0.1:8000/v1/assistant/turns` when Workstation Mode is active.
-
-#### 7. `android/app/src/main/java/com/visualassistant/app/chat/AndroidPhotoEncoder.kt` (Modify)
-*   **Type / Scope**: Image Normalization Utility
-*   **Proposed Changes**:
-    *   Adds white background canvas compositing for transparent PNGs before JPEG 85 compression to eliminate black backgrounds.
-    *   Clamps maximum edge to 1600px.
-
-#### 8. `android/app/src/main/java/com/visualassistant/app/mosslive/DirectMossLiveTransport.kt` (Create)
-*   **Type / Scope**: Realtime WebSocket Transport
-*   **Proposed Changes**:
-    *   Connects directly to `wss://api.mosi.cn/v1/realtime?model=moss-live-1.0` with `Authorization: Bearer <key>`.
-    *   Executes the 2-step setup handshake (`attach_session`, `session.update`).
-    *   Transmits tagged binary frames (`0x00` PCM audio, `0x01` JPEG camera frames) and chunk acknowledgements.
-    *   Maintains the 15-second suspended ping loop during quiescent suspension.
-
-#### 9. `android/app/src/main/java/com/visualassistant/app/mosslive/RemotePCMossTransport.kt` (Create / Refactor)
-*   **Type / Scope**: Realtime WebSocket Transport
-*   **Proposed Changes**:
-    *   Refactors `OkHttpMossLiveTransport` to connect to `ws://127.0.0.1:8000/v1/realtime/moss-live` when Workstation Mode is active.
-
-#### 10. `android/app/src/main/java/com/visualassistant/app/network/notebook/NotebookLMClient.kt` (Create)
-*   **Type / Scope**: Kotlin Interface
-*   **Proposed Changes**:
-    *   Defines `suspend fun listNotebooks(): List<NotebookItem>`, `suspend fun askChat(notebookId: String, query: String): GroundedChatResult`, and `fun hasAuth(): Boolean`.
-
-#### 11. `android/app/src/main/java/com/visualassistant/app/network/notebook/NotebookSignInActivity.kt` (Create)
-*   **Type / Scope**: Android Activity (WebView)
-*   **Proposed Changes**:
-    *   Hosts `WebView` with `WebSettings.userAgentString` set to Chrome Mobile.
-    *   Monitors URL redirects; upon navigating to `notebooklm.google.com`, extracts cookies (`SIDTS`, `__Secure-1PSID`) via `CookieManager` and saves into `SecureCredentialStore`.
-
-#### 12. `android/app/src/main/java/com/visualassistant/app/network/notebook/DirectMobileNotebookLMClient.kt` (Create)
-*   **Type / Scope**: Google Web RPC Client
-*   **Proposed Changes**:
-    *   Sends cookie-authenticated HTTPS requests to `notebooklm.google.com/_/NotebooklmUi/data/batchexecute`.
-    *   Sanitizes grounded answers by removing markdown citations and footnotes before passing to TTS.
-
-#### 13. `android/app/src/main/java/com/visualassistant/app/network/notebook/RemotePCNotebookLMClient.kt` (Create)
-*   **Type / Scope**: Kotlin Service
-*   **Proposed Changes**:
-    *   Connects to PC backend endpoints (`/v1/notebooklm/notebooks`, `/v1/assistant/turns`) when Workstation Mode is active.
-
-#### 14. `android/app/src/main/java/com/visualassistant/app/network/router/BackendModeRouter.kt` (Create)
-*   **Type / Scope**: Core Mode Router
-*   **Proposed Changes**:
-    *   Reads active mode from `SecureCredentialStore`.
-    *   Exposes active `AssistantGateway`, `MossLiveTransport`, and `NotebookLMClient`.
-    *   Supports dynamic switching without application restart.
-
-#### 15. `android/app/src/main/java/com/visualassistant/app/security/SecureCredentialStore.kt` (Create)
-*   **Type / Scope**: Security & Credential Manager
-*   **Proposed Changes**:
-    *   Wraps `EncryptedSharedPreferences` backed by Android Keystore (`MasterKey`).
-    *   Manages `OPENAI_API_KEY`, `STEPFUN_API_KEY`, `MOSS_API_KEY`, `GOOGLE_COOKIES`, and `BACKEND_MODE` (`STANDALONE` vs `WORKSTATION`).
-
-#### 16. `android/app/src/main/java/com/visualassistant/app/ui/SettingsScreen.kt` (Create)
-*   **Type / Scope**: Jetpack Compose Screen
-*   **Proposed Changes**:
-    *   Mode Selector: "Standalone Mobile" (Default) vs "Workstation PC".
-    *   Masked API key input fields with Clipboard Paste buttons.
-    *   Camera Key Scanner trigger (using ML Kit Latin OCR).
-    *   Google NotebookLM sign-in button with active cookie status pill.
-
-#### 17. `android/app/src/main/java/com/visualassistant/app/ui/CameraKeyScanner.kt` (Create)
-*   **Type / Scope**: CameraX Scanner Component
-*   **Proposed Changes**:
-    *   Analyzes camera preview frames using bundled Google ML Kit Latin OCR to scan printed API keys or desktop screen QR codes.
-
-#### 18. `scripts/show_auth_qr.py` (Create)
-*   **Type / Scope**: Python CLI Script
-*   **Proposed Changes**:
-    *   Reads `backend/.data/notebooklm/storage_state.json` on the PC and renders a local terminal/browser QR code for quick scanning by the phone.
-
-#### 19. `android/app/src/main/java/com/visualassistant/app/chat/ChatViewModel.kt` (Modify)
-*   **Type / Scope**: Main ViewModel
-*   **Proposed Changes**:
-    *   Inject `BackendModeRouter` instead of hardcoded `PhoneLiveAssistant`.
-    *   Wire senior-friendly error translation via `AssistantErrorMapper`.
-
-#### 20. `android/app/src/main/java/com/visualassistant/app/knowledge/` (Deprecate / Remove)
-*   **Type / Scope**: Legacy Book Ingestion Classes
-*   **Proposed Changes**:
-    *   Deprecate `PhoneBookImporter.kt`, `AndroidPdfOcr.kt`, and `PhoneBookImportApi.kt`, as all document handling is offloaded to NotebookLM.
-
----
-
-## Verification Plan
-
-### 1. Build & Compilation Verification
-*   Execute Gradle build on local Android project:
-    ```powershell
-    .\android\gradlew.bat -p android assembleDebug testDebugUnitTest lintDebug
-    ```
-*   Verify zero duplicate `.so` collisions and zero dependency conflicts.
-
-### 2. Standalone Automated Tests (PC Backend Shut Down)
-*   **Unit Tests (`testDebugUnitTest`)**:
-    *   `DirectCloudAssistantGatewayTest`: MockWebServer verifies OpenAI and StepFun JSON request headers, base64 payload, and response parsing.
-    *   `DirectMossLiveTransportTest`: MockWebServer verifies WebSocket handshake, tagged binary frame packing (`0x00`/`0x01`), and chunk ACK dispatch.
-    *   `BackendModeRouterTest`: Verifies dynamic switching between Standalone and Workstation gateways without state corruption.
-    *   `SecureCredentialStoreTest`: Verifies Keystore encryption and persistence across mock process restarts.
-
-### 3. Live Hardware Verification (Samsung Galaxy S24+)
-*   **Test 1 (Standalone USB Disconnected)**: Disconnect USB cable, turn off PC backend. Open app, snap photo, send typed question &rarr; verify OpenAI/StepFun response within 3s.
-*   **Test 2 (Duplex MOSS Live Standalone)**: Start MOSS Live with video on cellular data &rarr; verify continuous camera frame streaming, speaker AEC, and live transcription.
-*   **Test 3 (Hands-Free Voice Switching)**: In MOSS Live, speak *"Use notebook [Name], [Question]"* &rarr; verify MOSS suspension, earcon tones, grounded NotebookLM reply, TTS readout, and resume via *"Back to MOSS"*.
-*   **Test 4 (Workstation Mode Fallback)**: Toggle to Workstation Mode in Settings, attach USB cable, run `Start MOSS Live.cmd` &rarr; verify traffic routes to `127.0.0.1:8000`.
-
---------------------------------------------------------------------------------
-
-*Drafted with EGM*
+#### Phase 4: End-to-End Verification
+1. **Local Regression Verification**:
+   * Verify USB loopback mode (`127.0.0.1:8000` via ADB reverse) continues to function without regression.
+   * Verify Wi-Fi hotspot mode continues to discover local PC IP.
+2. **Cellular Mobile Data Verification**:
+   * Disconnect phone Wi-Fi; enable 4G/5G mobile data.
+   * Configure remote URL and Bearer token in Settings.
+   * Tap "Test Connection" & verify `HTTP 200 OK`.
+   * Execute Photo + Question turn over cellular; verify response within 2.5s.
+   * Initiate MOSS Live call over cellular; verify 16kHz audio uplink, 48kHz downlink, and 1500ms camera video frames stream continuously.

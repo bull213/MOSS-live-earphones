@@ -63,7 +63,6 @@ internal fun ConversationWorkspace(
     onImportBook: () -> Unit = {},
     moss: MossLiveUiState = MossLiveUiState(),
     onStartMoss: () -> Unit = {},
-    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
     endpoint: BackendEndpoint? = null,
@@ -104,7 +103,6 @@ internal fun ConversationWorkspace(
                 onVoice = onVoice, onVoiceSettings = onVoiceSettings, onSaveVoice = onSaveVoice, onDiscardVoice = onDiscardVoice,
                 actionBusy = actionBusy, onLiveMode = onLiveMode, onAttachPhoto = onAttachPhoto,
                 onUseTranscript = onUseTranscript, moss = moss, onStartMoss = onStartMoss,
-                onCancelMoss = onCancelMoss,
                 onSharePhotoWithMoss = onSharePhotoWithMoss, onTakeLivePhoto = onTakeLivePhoto,
                 speakingMessageId = speakingMessageId, onReplaySpeech = onReplaySpeech,
                 onExitNotebook = onExitNotebook)

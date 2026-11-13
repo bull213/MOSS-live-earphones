@@ -303,7 +303,6 @@ internal fun ChatRoute(
                     }
                 } else chat.stopMossLive()
             },
-            onCancelMoss = chat::cancelMossTurn,
             onSharePhotoWithMoss = {
                 selectedPhoto?.let(chat::sharePhotoWithMossLive)
             },

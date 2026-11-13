@@ -46,5 +46,7 @@ evaluation/results/
 
 # Temporary staging and local export folders
 MOSS-live-earphones-upload/
+scripts/bin/
+scripts/logs/
 
 

@@ -80,7 +80,6 @@ internal fun ChatScreen(
     onUseTranscript: (String) -> Unit = {},
     moss: MossLiveUiState = MossLiveUiState(),
     onStartMoss: () -> Unit = {},
-    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
     speakingMessageId: String? = null,
@@ -118,7 +117,7 @@ internal fun ChatScreen(
         bottomBar = { ChatComposer(state, hasPhoto, openingCamera, currentTitle, onDraftChanged, onPhoto, onSend,
             speech, voiceAvailable, microphonePermission, microphoneRequested, onVoice, onVoiceSettings, actionBusy,
             pendingVoice.any { it.status != VoiceSaveStatus.SAVING }, onLiveMode, onAttachPhoto, moss, onStartMoss,
-            onCancelMoss, onSharePhotoWithMoss, onTakeLivePhoto) },
+            onSharePhotoWithMoss, onTakeLivePhoto) },
     ) { insets ->
         ChatTimeline(state, messages, list, insets, openingCamera, storageFailed, onPhoto, onRetryStorage, onLoadEarlier,
             pendingVoice, onSaveVoice, onDiscardVoice, actionBusy, onUseTranscript, speakingMessageId, onReplaySpeech)
@@ -174,7 +173,6 @@ private fun ChatComposer(
     onLiveMode: (Boolean) -> Unit, onAttachPhoto: (Boolean) -> Unit,
     moss: MossLiveUiState,
     onStartMoss: () -> Unit,
-    onCancelMoss: () -> Unit = {},
     onSharePhotoWithMoss: () -> Unit = {},
     onTakeLivePhoto: () -> Unit = {},
 ) {

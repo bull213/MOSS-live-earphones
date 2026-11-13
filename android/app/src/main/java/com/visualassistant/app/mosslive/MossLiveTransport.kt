@@ -51,7 +51,7 @@ internal class OkHttpMossLiveTransport(
             val configuredHost = endpoint?.host
             val resolvedHost = ServerScanner.findOrResolveBackend(configuredHost)
             val finalHost = if (resolvedHost != null) {
-                val fullHost = if (resolvedHost.contains(":")) resolvedHost else "$resolvedHost:8000"
+                val fullHost = BackendEndpoint.normalizeHost(resolvedHost)
                 endpoint?.host = fullHost
                 fullHost
             } else {

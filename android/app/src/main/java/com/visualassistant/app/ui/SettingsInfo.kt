@@ -170,7 +170,7 @@ private fun ServerConnectionSection(endpoint: BackendEndpoint) {
                         scope.launch {
                             val found = ServerScanner.findOrResolveBackend(endpoint.host, 8000)
                             if (found != null) {
-                                endpoint.host = if (found.contains(":")) found else "$found:8000"
+                                endpoint.host = BackendEndpoint.normalizeHost(found)
                                 hostInput = endpoint.host
                                 statusMessage = context.getString(R.string.settings_server_found, endpoint.host)
                             } else {
@@ -227,6 +227,13 @@ private fun RecentMemorySection(
     var showConfirmDialog by remember { mutableStateOf(false) }
     var showClearedMessage by remember { mutableStateOf(false) }
 
+    LaunchedEffect(showClearedMessage) {
+        if (showClearedMessage) {
+            delay(4000L)
+            showClearedMessage = false
+        }
+    }
+
     if (showConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showConfirmDialog = false },
@@ -260,14 +267,15 @@ private fun RecentMemorySection(
             Text(stringResource(R.string.settings_memory_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.semantics { heading() })
             Text(stringResource(R.string.settings_memory_body), style = MaterialTheme.typography.bodyLarge)
 
-            OutlinedButton(
+            Button(
                 onClick = {
                     showClearedMessage = false
                     showConfirmDialog = true
                 },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
                 ),
             ) {
                 Text(stringResource(R.string.settings_memory_clear_button))

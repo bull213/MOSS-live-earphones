@@ -1,78 +1,143 @@
-# Stage 8: Intermediate Zoom Out Review Report
+# Intermediate Zoom Out Review Report: Private Remote Cellular Connectivity
 
-**Target:** `docs/designs/backend_migration_to_android.md` (Lines 1–490)  
-**Standard:** `resources/document_standards/zoom-out-standard.md`  
-**Reviewer:** `egm-zoom-out` (Skeptical Architect)  
-**Context Ingested:** `zoom_out_report.md`, `comprehension_report.md`, `critic_report.md`
-
----
-
-## Reviewer Status
-
-| Reviewer | Status |
-| :--- | :--- |
-| `egm-zoom-out` | completed |
+**Target Document:** [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md) (Lines 1–304)  
+**Stage:** Stage 8 (Intermediate Zoom Out)  
+**Deliverable:** `intermediate_zoom_out_report.md`  
+**Reviewer:** `egm-zoom-out` (Skeptical Architect Goldfish)
 
 ---
 
-## High-Altitude Realignment Synthesis
+## Executive Summary & High-Altitude Architectural Verdict
 
-Synthesizing findings across Comprehension and Critic stages reveals that the current draft risks failing its core objective—enabling PC-independent mobile execution—by introducing massive speculative complexity and fragile reverse-engineering.
+The core concept of this feature—enabling an older adult to use the AI Visual Assistant outside the home over 4G/5G mobile cellular networks without installing auxiliary VPN client apps or paying monthly cloud hosting fees—is sound, valuable, and aligns with the project's foundational constraints.
 
-1. **The NotebookLM Mobile Trap**: Reverse-engineering Google's internal web RPC (`batchexecute`) on Android using an in-app `WebView` cookie harvester and desktop QR code sync is an architectural dead-end. On the PC, NotebookLM required a full headless Chromium browser (Playwright) to survive Google's anti-bot checks and CSRF token rotations (`SNlM0e`). Porting this to native Android Kotlin is fragile and unmaintainable.
-2. **Reinventing Existing Codebase Primitives**: The design invents brand-new interfaces (`AssistantGateway`, `BackendModeRouter`) and duplicate remote classes (`RemotePCAssistantGateway`, `RemotePCMossTransport`), ignoring that `LiveAssistant`, `PhoneLiveAssistant`, `MossLiveTransport`, and `OkHttpMossLiveTransport` already exist in `com.visualassistant.app` with working `ServerScanner` LAN IP resolution.
-3. **Destructive DSP Over-Engineering**: The proposal invents a custom `MossEchoSuppressor` that zeroes the microphone buffer during playback, degrading full-duplex voice AI into a half-duplex walkie-talkie and ignoring Android's native hardware `AcousticEchoCanceler`.
-4. **Credential Ingestion Gold-Plating**: Bundling Google ML Kit Latin OCR (15–20 MB) and writing a `CameraKeyScanner` just to avoid copy-pasting an API key is pure gold-plating that directly contradicts the goal of keeping the APK lightweight.
+However, from a **30,000-foot Skeptical Architect / YAGNI** perspective, the current RFC is suffering from a classic architectural identity crisis:
+1. **Reinventing Existing Code**: A large portion of the proposed design (Bearer token authentication, constant-time validation, Android Settings UI configuration, authorization header injection) **is already fully implemented and working in the codebase**. The RFC presents existing infrastructure as speculative new requirements.
+2. **Fictitious Protocol Over-Engineering**: The plan invents a complex distributed session-anchoring protocol (`session.attach`, relay buffer recovery) across mobile cellular reconnects, even though neither the Android client nor the Python backend supports it, and the Touched File Manifest lists zero backend changes.
+3. **Premature Headless Daemon Architecture**: The document over-engineers Windows host automation by mandating `cloudflared` and FastAPI boot as headless Windows `SYSTEM` services before user login. This breaks Google NotebookLM's persistent Playwright browser profile (`storage_state.json`), which requires a user desktop session, while introducing needless Session 0 isolation complexity.
+4. **Altitude Drops into Fragile Weeds**: The RFC dives into granular implementation weeds (vendor domain sniffing for `.trycloudflare.com` and `.ts.net`, hardcoded port heuristics) while leaving the primary WAN routing persistence mechanism across reboots unresolved in an "Open Question".
+
+By stripping out speculative session protocols, eliminating already-implemented deliverables, and simplifying host startup to user-level execution, the entire feature can be delivered with **less than 20% of the proposed codebase churn** while delivering 100% of the user value.
 
 ---
 
 ## Prioritized Findings (Blockers -> Major -> Nits)
 
-### 1. Reverse-Engineering Google NotebookLM on Mobile is an Architectural Dead-End - Severity: Blocker
-* **Affected Scope:** Overview (Lines 17–18), Goal G4 (Lines 40–42), CUJ 3 (Lines 86–96), Section 2.4 (Lines 256–268), Section 340 Items 10–13 (Lines 400–421)
-* **Discrepancy Description**: Google NotebookLM provides no public developer API. Re-implementing a bare-bones `batchexecute` client on Android by spoofing `User-Agent` in a `WebView` omits the mandatory anti-CSRF token (`SNlM0e`) and violates Google authentication policies. The app will break on cellular IP shifts and Google web UI updates.
-* **Architectural Realignment**:
-  - *Option A (Workstation-Assisted NotebookLM)*: Unofficial Google NotebookLM integration remains workstation-assisted via the PC backend. Standalone Mobile Mode focuses on Vision (OpenAI/StepFun) and MOSS Live duplex voice.
-  - *Option B (Supported Cloud Document API)*: If standalone mobile document search is mandatory, replace reverse-engineered NotebookLM with an official, token-authenticated cloud API (e.g., Gemini File API or OpenAI Assistant API).
+### 1. Fictitious Protocol Complexity (`session.attach` and Relay Buffering) Violates YAGNI and Reality - Severity: Blocker
+* **Affected Scope:** Section 1 Diagram (Line 121), Section 3 Component 4 (Lines 187–190), Phase 2 (Lines 282–284) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L121)
+* **Simplicity Rationale:** 
+  The RFC claims that on cellular handover, the client will *"re-attach to the server session and resume duplex audio without tearing down the UI or resetting conversation turns"* by re-sending a client action named `session.attach`, supported by a backend *"MOSS Live WebSocket Relay (Session Anchor & Upstream Buffer)"*.
+  
+  Codebase verification reveals:
+  * In [`backend/app/moss_live.py`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/moss_live.py#L60-L71), `ALLOWED_CLIENT_ACTIONS` does not contain `session.attach` (nor does the upstream MOSS provider protocol).
+  * The backend immediately tears down upstream connections on client disconnect; there is zero buffering or anchoring state.
+  * The Touched File Manifest lists **zero backend files**.
+  
+  Attempting to implement stateful session anchoring and frame buffering across cellular disconnections is a complex distributed systems problem that is completely unnecessary for an MVP voice assistant. If a mobile cellular connection drops during a walk, standard client-side reconnection (initiating a clean WebSocket session) is simple, robust, and requires zero new protocol abstractions. Inventing phantom protocol actions is an architectural dead-end.
 
 ---
 
-### 2. Reinventing Existing Core Interfaces and Transport Layers - Severity: Blocker
-* **Affected Scope:** Section 1.1 Diagram (Lines 114–189), Section 2.1 (Lines 195–216), Section 340 Items 3, 5, 6, 8, 9, 14 (Lines 359–400, 422–428)
-* **Discrepancy Description**: The design invents `AssistantGateway`, `RemotePCAssistantGateway`, `RemotePCMossTransport`, and `BackendModeRouter`. The codebase already has `LiveAssistant`, `PhoneLiveAssistant`, `MossLiveTransport`, and `OkHttpMossLiveTransport`.
-* **Architectural Realignment**: Discard `AssistantGateway`, `RemotePCAssistantGateway`, `RemotePCMossTransport`, and `BackendModeRouter`. Implement `DirectCloudLiveAssistant` (implementing `LiveAssistant`) and `DirectMossLiveTransport` (implementing `MossLiveTransport`). Keep existing `PhoneLiveAssistant` and `OkHttpMossLiveTransport` for workstation mode. Mode selection is a simple factory check at initialization.
+### 2. Premature Headless SYSTEM Daemon Architecture Over-Engineers Windows Host Management - Severity: Blocker
+* **Affected Scope:** Goal G5 (Lines 43–44), Section 1 (Lines 118–120), Phase 3 (Lines 286–291) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L43-L44)
+* **Simplicity Rationale:**
+  Goal G5 mandates packaging the tunnel daemon and FastAPI backend as always-on Windows background services that automatically launch on system boot *"without requiring active user desktop logins"*.
+  
+  This is a severe over-engineering trap:
+  * The backend hosts Google NotebookLM, which relies on a Playwright persistent browser profile in [`backend/app/notebooklm/client.py`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/notebooklm/client.py). Playwright browser automation fails under `NT AUTHORITY\SYSTEM` due to Windows Session 0 desktop isolation and missing user app data paths.
+  * The Windows PC is a personal desktop development machine. The user or caregiver turns on the computer and logs into Windows.
+  * Launching `cloudflared` and FastAPI via a user-session Task Scheduler job (or integrating tunnel verification directly into the existing [`Restart Backend.cmd`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/Restart%20Backend.cmd) and [`scripts/run_backend.ps1`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/scripts/run_backend.ps1)) is 10x simpler, preserves Playwright browser access, and requires zero service wrappers or administrative elevation churn.
 
 ---
 
-### 3. Loopback Wi-Fi Networking Fallacy - Severity: Blocker
-* **Affected Scope:** Overview (Line 15), Architecture (Lines 178–189), Section 340 Items 6 & 9 (Lines 378–380, 397–399)
-* **Discrepancy Description**: Hardcoding `127.0.0.1:8000` for Wi-Fi workstation mode connects to the phone's loopback and fails with `ECONNREFUSED`. The existing codebase already solved this with `ServerScanner.findOrResolveBackend(...)`.
-* **Architectural Realignment**: Retain `ServerScanner` and `BackendEndpoint` for Workstation Mode so that USB uses `127.0.0.1` (via ADB reverse) while Wi-Fi uses the resolved LAN IP address.
+### 3. Unresolved WAN Persistence Hand-Waved While Implementation Weeds Are Prematurely Specified - Severity: Blocker
+* **Affected Scope:** Status Header (Line 4), Open Question 1 (Lines 61–65), Section 4 Component 1 (Lines 198–204), Phase 3 (Lines 288–291) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L61-L65)
+* **Simplicity Rationale:**
+  The RFC is marked `Status: Approved` and spends paragraphs specifying low-level Kotlin string manipulation, yet leaves the single most fundamental architectural question unresolved: **How does the mobile client persistently discover the PC across reboots?**
+  
+  * Quick Tunnels (`trycloudflare.com`) generate an ephemeral, randomized URL on every restart. If the host reboots, an older adult outside the home is permanently disconnected until someone physically reads the PC console and reconfigures the Android app.
+  * Named Tunnels require a registered domain or Cloudflare account credentials.
+  
+  Straddling both with an invalid YAML snippet (lacking `tunnel:`, `credentials-file:`, and the mandatory catch-all ingress rule) is an architectural cop-out. The RFC must settle the high-altitude WAN transport decisively: commit to an authenticated Cloudflare Named Tunnel with a static hostname, or provide a dead-simple dynamic URL publishing mechanism. Specifying code weeds before resolving WAN addressability violates Zoom-Out principles.
 
 ---
 
-### 4. Software Echo Zeroing Breaks Duplex Voice (Barge-In) - Severity: Major
-* **Affected Scope:** Section 1.1 Diagram (Line 127), CUJ 2 (Lines 83–85), Section 2.5 (Lines 269–275)
-* **Discrepancy Description**: Zeroing microphone capture buffers during playback turns full-duplex conversational voice into half-duplex walkie-talkie mode, preventing user barge-in and cutting off user speech.
-* **Architectural Realignment**: Eliminate `MossEchoSuppressor`. Rely on Android's platform hardware `AcousticEchoCanceler` on the `AudioRecord` session ID with `AudioSource.VOICE_COMMUNICATION`.
+### 4. Redundant Deliverables: Proposing Infrastructure That Already Exists in the Codebase - Severity: Major
+* **Affected Scope:** Goal G6 (Lines 44–46), Section 4 Component 2 (Lines 208–212), Touched File Manifest (Lines 251–254) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L44-L46)
+* **Simplicity Rationale:**
+  The RFC frames cryptographic Bearer token authentication, token generation, and mobile configuration as major new system features. Codebase verification shows this is already largely implemented:
+  * **Backend Settings**: [`backend/app/config.py`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/config.py#L31) already defines `api_bearer_token: SecretStr | None = None`.
+  * **HTTP Middleware**: [`backend/app/middleware.py`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/middleware.py#L42-L57) already performs constant-time comparison via `secrets.compare_digest` on all non-health requests.
+  * **WebSocket Gateway**: [`backend/app/moss_live.py`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/backend/app/moss_live.py#L508-L523) already validates Bearer tokens on WebSocket connections before `websocket.accept()`.
+  * **Android Storage**: [`BackendEndpoint.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/network/BackendEndpoint.kt#L51-L60) already persists `bearerToken` and provides `authorizationHeader()`.
+  * **Android Settings UI**: [`SettingsInfo.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/ui/SettingsInfo.kt#L103-L156) already contains the full `OutlinedTextField` for entering and saving the Bearer token, along with "Test Connection" validation.
+  * **Client Header Injection**: [`LiveAssistant.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/chat/LiveAssistant.kt#L76-L78) and [`MossLiveTransport.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L76-L80) already attach the `Authorization` header.
+  
+  Presenting already-existing components as speculative architectural deliverables creates false churn and obscures the actual remaining delta (which is simply fixing host port normalization).
 
 ---
 
-### 5. Over-Engineered Credential Entry & Dependency Bloat (YAGNI) - Severity: Major
-* **Affected Scope:** Section 2.6 (Lines 276–284), Section 340 Items 16, 17, 18 (Lines 435–452)
-* **Discrepancy Description**: Adding `CameraKeyScanner` with Google ML Kit Latin OCR and a Python desktop QR script adds 15–20 MB of APK bloat for a one-time credential setup action.
-* **Architectural Realignment**: Drop `CameraKeyScanner.kt`, `scripts/show_auth_qr.py`, and remove `com.google.mlkit:text-recognition` from `build.gradle.kts`. Use standard masked input fields with clipboard paste buttons.
+### 5. Self-Inflicted Architectural Conflict: Mandating Loopback-Only Binding (`127.0.0.1`) Destroys Local Wi-Fi - Severity: Major
+* **Affected Scope:** Goal G7 (Line 46), Architecture Diagram (Line 119), CUJ 3 (Lines 80–84) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L46)
+* **Simplicity Rationale:**
+  Goal G7 mandates that FastAPI bind strictly to `127.0.0.1:8000`. However, the existing system in [`scripts/run_backend.ps1`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/scripts/run_backend.ps1#L25) binds to `0.0.0.0:8000` specifically to enable direct, low-latency Wi-Fi and mobile hotspot connectivity.
+  
+  Artificially restricting FastAPI to loopback immediately breaks local Wi-Fi scanning ([`ServerScanner.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/network/ServerScanner.kt)), creating a cascading problem where all local home traffic is forced out through Cloudflare WAN. Because residential routers do not open inbound ports (Non-Goal NG1), binding to `0.0.0.0:8000` is already protected from the public internet by NAT/firewalls. Mandating loopback-only binding is an unnecessary theoretical constraint that breaks working functionality.
 
 ---
 
-### 6. Dual-Cloud Provider Ambiguity & Premature Multi-Model Abstraction - Severity: Major
-* **Affected Scope:** Goal G3 (Line 39), CUJ 1 (Line 73), Section 2.2 (Lines 218–225), Section 340 Item 5 (Lines 372–375)
-* **Discrepancy Description**: The document mandates supporting both OpenAI Vision (`gpt-6.1-terra`) and StepFun (`step-5-preview`), but provides zero routing logic or fallback rules. Furthermore, `gpt-6.1-terra` is not a public model identifier.
-* **Architectural Realignment**: Add an explicit Provider Selector in Settings ("OpenAI" vs "StepFun"), use verified public model identifiers (`gpt-4o` / `gpt-4o-mini`), and dispatch accordingly.
+### 6. Hardcoded Vendor Suffix Sniffing in Android Introduces Fragile Coupling and Altitude Drops - Severity: Major
+* **Affected Scope:** Section 3 Component 1 (Lines 168–172), Phase 1 (Lines 264–268) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L168-L172)
+* **Simplicity Rationale:**
+  The implementation plan specifies checking for hardcoded vendor domain strings (`.trycloudflare.com`, `.ts.net`) inside `BackendEndpoint.kt` to decide whether to append `:8000`.
+  
+  This is an altitude drop that creates brittle coupling:
+  * If a user sets up a custom domain (e.g. `assistant.myfamily.org`), DuckDNS, or another reverse proxy, the domain check fails and the client unconditionally appends `:8000`, breaking cellular connectivity.
+  * The architectural rule should be high-altitude, universal, and protocol-driven: *If a host string includes `https://` / `wss://`, or if a bare hostname has no explicit port and is not an IPv4 address, treat it as a standard web endpoint (defaulting to 443) and NEVER append `:8000`.* No vendor domain sniffing is needed.
 
 ---
 
-### 7. Implementation Weeds in Architecture Specification - Severity: Nit
-* **Affected Scope:** Section 2.2 (Lines 229–235), Section 2.3 (Lines 242–245, 252–253), Section 468 (Lines 471–472)
-* **Discrepancy Description**: High-level sections contain low-level Canvas bitmap drawing snippets, raw JSON payloads, and Gradle CLI execution strings.
-* **Architectural Realignment**: Keep high-level sections focused on component responsibilities, lifecycle transitions, and interface contracts.
+### 7. Query Parameter Bearer Fallback is an Unnecessary Security Compromise (YAGNI) - Severity: Major
+* **Affected Scope:** Section 2 Item 2 (Lines 156–157), Touched File Manifest (Lines 251–252) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L156-L157)
+* **Simplicity Rationale:**
+  The RFC specifies passing the Bearer token in WebSocket query parameters (`?token=<token>`) as a fallback. Query parameters are logged in cleartext across Cloudflare edge logs, intermediate proxies, and server access logs. While browser WebSocket APIs historically required query params due to JavaScript header limitations, the Android client uses native OkHttp ([`OkHttpMossLiveTransport.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L78)), which already passes the `Authorization: Bearer <token>` header during the HTTP upgrade. Query parameter token fallback solves no existing problem and should be eliminated.
+
+---
+
+### 8. Premature 5-Second Reconnect Budget Arbitrarily Truncates Cellular Recovery - Severity: Nit
+* **Affected Scope:** Section 3 Component 4 (Lines 188–189), Phase 2 (Lines 281–282) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L188-L189)
+* **Simplicity Rationale:**
+  The RFC prescribes a rigid 3-attempt backoff (500ms, 1500ms, 3000ms = 5.0 seconds total) before calling `fail()`. In real-world outdoor cellular mobility (elevators, cell tower handovers, parking structures), transient disconnections regularly last 10–25 seconds. Hardcoding a 5-second total window in the technical plan guarantees false-positive session failures during the exact user journeys it was designed to support. The client should allow a 20–30s reconnection window before giving up.
+
+---
+
+### 9. Transport-Agnostic Subnet Probing Wastes Mobile Radio Energy - Severity: Nit
+* **Affected Scope:** Section 3 Component 2 (Lines 174–180), Phase 1 (Lines 270–273) of [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md#L174-L180)
+* **Simplicity Rationale:**
+  When Android is connected exclusively to `TRANSPORT_CELLULAR`, executing local subnet scans for `192.168.x.x` candidates wastes radio battery and delays connection establishment. Inspecting `ConnectivityManager.getNetworkCapabilities()` to skip local LAN scanning when on cellular data is cleaner, faster, and respects mobile battery health.
+
+---
+
+## The Minimal Viable Architecture (How to Reduce Churn by 80%)
+
+To achieve 100% of the remote cellular capability with minimal complexity and zero regressions:
+
+1. **Keep What Already Works**:
+   * Recognize that Bearer authentication, UI token configuration, and header injection are **already complete**. Remove them from the list of new architectural deliverables.
+   * Keep FastAPI bound to `0.0.0.0:8000` (or dual-bind LAN + loopback) so local Wi-Fi and hotspot connections continue to work seamlessly without proxy overhead.
+
+2. **Fix the Core Client Defect in One Place**:
+   * In [`BackendEndpoint.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/network/BackendEndpoint.kt), implement universal scheme/port normalization: if host is HTTPS/WSS or a domain without a port, default to 443 and never append `:8000`.
+   * In [`LiveAssistant.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/chat/LiveAssistant.kt#L96) and [`MossLiveTransport.kt`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/android/app/src/main/java/com/visualassistant/app/mosslive/MossLiveTransport.kt#L54), delete the hardcoded `val fullHost = if (resolved.contains(":")) resolved else "$resolved:8000"` and rely directly on `BackendEndpoint`.
+
+3. **Simplify Host Automation to User-Level Execution**:
+   * Abandon the headless `NT AUTHORITY\SYSTEM` service requirement. Run `cloudflared` as a user-level process or startup task alongside FastAPI in [`Restart Backend.cmd`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/Restart%20Backend.cmd). This avoids Playwright Session 0 crashes and eliminates complex Windows service wrappers.
+   * Standardize on a persistent Cloudflare Named Tunnel with a static hostname so the Android app never requires manual re-pairing after a reboot.
+
+4. **Drop Speculative Protocol Handshakes**:
+   * Remove the fictitious `session.attach` and backend relay buffer design. Handle cellular reconnection cleanly in OkHttp by re-establishing the standard WebSocket session without invented protocol actions.
+
+---
+
+## Conclusion & Recommendation
+
+The document should transition from `Status: Approved` to `Status: In Review` to allow the author to strip out redundant deliverables and fictitious protocols, simplify host lifecycle management, and establish a static WAN endpoint. These revisions will turn a sprawling 304-line over-engineered specification into a concise, rock-solid plan that can be implemented cleanly and safely.

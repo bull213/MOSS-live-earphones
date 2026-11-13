@@ -1,216 +1,134 @@
-# Consolidated EGM Review Report
+# Consolidated Goldfish Review Report: Private Remote Cellular Connectivity
 
-**Target Document:** `docs/designs/backend_migration_to_android.md` (Lines 1–490)  
-**Execution Mode:** Consolidated full flow (Stages 5, 6, 7, 8, 9)  
+**Target Document:** [`docs/designs/private_remote_cellular_connectivity.md`](file:///c:/Users/liorc/PycharmProjects/PythonProject1/docs/designs/private_remote_cellular_connectivity.md)  
 **Date:** 2026-11-13  
-**Author:** bull213  
+**Review Preset:** Consolidated Report (Uninterrupted Full Flow across Stages 5, 6, 7, 8, 9)  
+**Deliverable Artifact:** `consolidated_review_report.md`
 
 ---
 
-## Executive Summary
+## 1. Executive Summary & Quality Scorecard
 
-The multi-lens adversarial review evaluated `docs/designs/backend_migration_to_android.md` across 5 distinct review stages: Initial Zoom Out, Comprehension Test, Critic Review, Intermediate Zoom Out, and Implementation Readiness.
+The multi-lens Goldfish review swarm completed an exhaustive audit of the RFC across five distinct evaluation stages:
+1. **Stage 5 (Initial Zoom Out & Inventive Catalyst):** `zoom_out_report.md`
+2. **Stage 6 (Comprehension & Semantics Test):** `comprehension_report.md`
+3. **Stage 7 (Design Critic, Structure & Style):** `critic_report.md`
+4. **Stage 8 (Intermediate Zoom Out & Minimal Architecture):** `intermediate_zoom_out_report.md`
+5. **Stage 9 (Implementation Readiness & Codebase Details):** `implementation_readiness_report.md`
 
-The review confirmed that the overarching business motivation—making the visual assistant mobile, cable-free, and independent from a Windows PC backend—is sound. However, the current specification **cannot be approved in its present state** due to critical architectural dead-ends, false assumptions regarding Google web endpoints, destructive audio processing, and extensive class/interface reinvention.
+### Core High-Altitude Verdict
+The business requirement and foundational direction—enabling an older adult to use the AI Visual Assistant outside the home over 4G/5G mobile cellular networks at zero cost without downloading secondary VPN apps—is strongly affirmed.
 
-### Primary Architectural Realignment Required Before Implementation
-1. **Google NotebookLM Reverse-Engineering Trap**: Google NotebookLM provides no public API and strictly blocks in-app WebViews (`disallowed_useragent`). Scraping cookies and reverse-engineering `batchexecute` without dynamic anti-CSRF tokens (`SNlM0e`) will immediately fail. The design must either retain NotebookLM as a workstation-assisted capability or migrate standalone mobile document Q&A to an official cloud API (Gemini File API / OpenAI Assistant API).
-2. **Duplex Voice Degradation**: Muting the microphone during speaker playback (`MossEchoSuppressor`) degrades duplex voice into a half-duplex walkie-talkie, breaking user barge-in. Android's native hardware `AcousticEchoCanceler` on `VOICE_COMMUNICATION` must be used instead.
-3. **Reinventing Existing Codebase Abstractions**: The existing codebase already contains `LiveAssistant`, `PhoneLiveAssistant`, `MossLiveTransport`, and `OkHttpMossLiveTransport` (with working Wi-Fi LAN discovery via `ServerScanner`). The design should not introduce duplicate interfaces (`AssistantGateway`) or duplicate remote classes.
-4. **Credential Ingestion Gold-Plating**: Bundling Google ML Kit Latin OCR (which cannot scan QR codes anyway) solely to scan keys off desktop monitors introduces 20 MB of bloat. Standard masked input fields with clipboard paste buttons are sufficient.
+However, all review lenses reached consensus on several critical blockers and over-engineering hazards in the current draft:
+* **Fictitious Protocol Actions**: The RFC invents a phantom protocol action (`session.attach`) and backend relay buffering that does not exist in the codebase.
+* **Over-Engineered Windows Services**: Mandating a headless Windows `SYSTEM` service breaks Google NotebookLM's persistent Playwright browser profile (`storage_state.json`), which requires a user desktop session.
+* **Redundant Deliverables**: Bearer token authentication, backend verification, and mobile Settings UI input fields are already fully implemented in the codebase.
+* **Self-Inflicted LAN Regression**: Mandating loopback-only binding (`127.0.0.1:8000`) breaks existing direct Wi-Fi and mobile hotspot connections.
 
----
-
-## Prioritized Action Items
-
-### 🔴 Blockers (Must resolve before any code is written)
-
-#### ACT-B1: Discontinue Reverse-Engineering Google NotebookLM `batchexecute` on Mobile
-* **Sources:** `zoom_out_report.md` (ZO-1), `comprehension_report.md` (COMP-1), `critic_report.md` (CRIT-1), `intermediate_zoom_out_report.md` (IZO-1), `implementation_readiness_report.md` (IR-1)
-* **Description**: Google blocks Google Account authentication inside Android WebViews (`disallowed_useragent`), and `batchexecute` calls fail without an HTML-embedded anti-CSRF token (`SNlM0e`). Calling private RPCs in pure Kotlin without Playwright browser automation is an unmaintainable dead-end.
-* **Resolution**:
-  - *Path A (Workstation-Assisted)*: Document Q&A via NotebookLM is explicitly designated as a Workstation Mode feature routed through the PC backend.
-  - *Path B (Supported Mobile Cloud API)*: If standalone mobile document search is mandatory, replace reverse-engineered NotebookLM with an official, token-authenticated cloud API (Gemini File API or OpenAI Assistant API).
-
-#### ACT-B2: Eliminate Software Echo Zeroing to Restore Full-Duplex Voice (Barge-In)
-* **Sources:** `zoom_out_report.md` (ZO-5), `critic_report.md` (CRIT-2), `intermediate_zoom_out_report.md` (IZO-4)
-* **Description**: Zeroing uplink PCM buffers during playback (`MossEchoSuppressor`) converts full-duplex conversational voice into half-duplex ducking, preventing the user from interrupting MOSS Live and clipping user speech.
-* **Resolution**: Eliminate custom software buffer zeroing. Attach Android's platform `AcousticEchoCanceler` to the `AudioRecord` session ID using `AudioSource.VOICE_COMMUNICATION`, preserving bidirectional audio for barge-in detection.
-
-#### ACT-B3: Fix Wi-Fi Workstation Networking Fallacy (`127.0.0.1` Loopback)
-* **Sources:** `comprehension_report.md` (COMP-2), `intermediate_zoom_out_report.md` (IZO-3)
-* **Description**: On Android, `127.0.0.1` is the device's local loopback. Hardcoding `127.0.0.1:8000` for Wi-Fi workstation mode connects to the phone itself and fails immediately with `ECONNREFUSED`.
-* **Resolution**: Retain `ServerScanner.findOrResolveBackend` and `BackendEndpoint` from the existing codebase so that USB connects via `127.0.0.1` (via ADB reverse) while Wi-Fi resolves the PC's actual LAN IP address.
-
-#### ACT-B4: Reuse Existing Interfaces and Transports Instead of Duplicating Core Abstractions
-* **Sources:** `zoom_out_report.md` (ZO-2), `intermediate_zoom_out_report.md` (IZO-2), `implementation_readiness_report.md` (IR-5, IR-6)
-* **Description**: The codebase already has `LiveAssistant`, `PhoneLiveAssistant`, `MossLiveTransport`, and `OkHttpMossLiveTransport`. Inventing `AssistantGateway`, `RemotePCAssistantGateway`, `RemotePCMossTransport`, and `BackendModeRouter` introduces ~6 redundant classes and breaks existing return types (`AssistantTurnResult`).
-* **Resolution**: Drop `AssistantGateway`, `RemotePCAssistantGateway`, `RemotePCMossTransport`, and `BackendModeRouter`. Implement `DirectCloudLiveAssistant` (implementing `LiveAssistant`) and `DirectMossLiveTransport` (implementing `MossLiveTransport`). Retain `PhoneLiveAssistant` and `OkHttpMossLiveTransport` for workstation mode. Mode selection is resolved during initialization.
-
-#### ACT-B5: Eliminate QR Scanning via ML Kit Latin OCR (Technical Impossibility & Bloat)
-* **Sources:** `zoom_out_report.md` (ZO-3), `intermediate_zoom_out_report.md` (IZO-5), `implementation_readiness_report.md` (IR-2)
-* **Description**: Google ML Kit Latin OCR (`com.google.mlkit:text-recognition`) parses text characters; it cannot scan or decode QR codes. Retaining ML Kit adds 15–20 MB of APK bloat for a one-time credential setup action.
-* **Resolution**: Drop `CameraKeyScanner.kt`, `scripts/show_auth_qr.py`, and remove `com.google.mlkit:text-recognition` from `build.gradle.kts`. Use standard masked input fields with one-tap clipboard paste buttons.
-
-#### ACT-B6: Add Missing Kotlin Serialization Gradle Plugin & Test Dependencies
-* **Sources:** `implementation_readiness_report.md` (IR-3)
-* **Description**: Adding runtime dependency `kotlinx-serialization-json` without applying the compiler plugin `id("org.jetbrains.kotlin.plugin.serialization")` causes compile-time failures. `mockwebserver` is also missing from `build.gradle.kts`.
-* **Resolution**: In Item 1 of the implementation plan, add `plugins { id("org.jetbrains.kotlin.plugin.serialization") }` and `testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")`.
-
-#### ACT-B7: Correct Non-Existent Filepath for `AndroidPhotoEncoder.kt`
-* **Sources:** `comprehension_report.md` (COMP-10), `implementation_readiness_report.md` (IR-4)
-* **Description**: Target File 7 references `AndroidPhotoEncoder.kt`, which does not exist. The actual file is `PhotoEncoder.kt`.
-* **Resolution**: Update the target file path to `android/app/src/main/java/com/visualassistant/app/chat/PhotoEncoder.kt`.
-
-#### ACT-B8: Add Missing Composition Root and UI Navigation Files to File Manifest
-* **Sources:** `comprehension_report.md` (COMP-7), `implementation_readiness_report.md` (IR-7, IR-8)
-* **Description**: The implementation manifest omits `MainActivity.kt` (composition root), `ChatRoute.kt` (book import callbacks and settings navigation), `ConversationWorkspace.kt` (rendering settings), and `AssistantErrorMapper.kt`.
-* **Resolution**: Add these files to the target files list with explicit modification and creation specifications.
-
-#### ACT-B9: Fix Heading Hierarchy Violations and Strip Ideation Residue
-* **Sources:** `critic_report.md` (CRIT-3, CRIT-4)
-* **Description**: `The Problem`, `Goals`, and `Non-Goals` are formatted as H2 rather than H3 under `## Overview`. Section 2.4 leaks conversational ideation labeling ("Option C").
-* **Resolution**: Nest subsections under `## Overview` and rename Section 2.4 symmetrically to `#### 2.4 Mobile NotebookLM Client`.
+By incorporating the reviewers' recommendations, the implementation plan can be simplified by 80% while delivering a robust, production-grade cellular connection.
 
 ---
 
-### 🟡 Major Findings (High Priority Corrections)
+## 2. Reviewer Status Matrix
 
-#### ACT-M1: Define Active Cloud Provider Routing & Align OpenAI Wire API
-* **Sources:** `comprehension_report.md` (COMP-3, COMP-8), `intermediate_zoom_out_report.md` (IZO-6), `implementation_readiness_report.md` (IR-9)
-* **Resolution**: Add an active provider selector in Settings ("OpenAI" vs "StepFun"). Use public model identifiers (`gpt-4o`/`gpt-4o-mini`). In `DirectCloudLiveAssistant`, document JSON schema definitions for structured output and distinguish OpenAI Responses API from StepFun chat completions.
-
-#### ACT-M2: Specify MOSS Live Downlink Wire Protocol & Fix Handshake State Desynchronization
-* **Sources:** `comprehension_report.md` (COMP-4), `implementation_readiness_report.md` (IR-12)
-* **Resolution**: Specify downlink framing (raw binary vs base64 JSON events), `run_id`/`turn_id` extraction, and chunk completion JSON schemas. Ensure `DirectMossLiveTransport` emits `session_attached` and `session.updated` events to `MossLiveTransportListener` so `MossLiveSessionController` does not hang in `CONFIGURING`.
-
-#### ACT-M3: Remove Phantom PC Secret Sync Button
-* **Sources:** `comprehension_report.md` (COMP-5)
-* **Resolution**: Remove the "PC Sync Button" from the Settings UI specification, as no backend endpoint exists to serve `.env` secrets over HTTP.
-
-#### ACT-M4: Provide Concrete Definitions for Custom Domain Types
-* **Sources:** `comprehension_report.md` (COMP-6), `implementation_readiness_report.md` (IR-11)
-* **Resolution**: Explicitly specify the properties, schemas, and package locations for `AssistantTurnResult`, `CapturedPhoto`, and `NotebookItem`.
-
-#### ACT-M5: Define Android Background Lifecycle & CameraX State Machine
-* **Sources:** `critic_report.md` (CRIT-5)
-* **Resolution**: Define the camera lifecycle state machine. When the app pauses or screen turns off, gracefully notify MOSS transport to suspend video (`video.state: false`) and maintain audio-only duplex communication inside an Android 14+ compatible Foreground Service.
-
-#### ACT-M6: Specify Resource Economics & Add Adaptive Camera Heartbeat
-* **Sources:** `zoom_out_report.md` (ZO-6), `critic_report.md` (CRIT-6)
-* **Resolution**: Add a Resource Economics section documenting cellular bandwidth usage (~650 MB/hour for raw PCM + 1500ms JPEG). Implement an adaptive camera frame rate controller (5000ms heartbeat on static scenes, bursting to 1000–1500ms on motion or visual queries).
-
-#### ACT-M7: Clarify Audio Routing Model During Active MOSS Calls
-* **Sources:** `critic_report.md` (CRIT-7)
-* **Resolution**: Clarify that voice switching during MOSS Live is driven by inspecting MOSS server-side transcripts, and that local Moonshine ONNX STT is suspended during MOSS Live to prevent CPU and thermal saturation.
-
-#### ACT-M8: Implement Client-Side Rate Limits & Spend Ceilings for BYOK Keys
-* **Sources:** `critic_report.md` (CRIT-8)
-* **Resolution**: Implement client-side turn rate limiting (e.g. max 10 requests/minute), retry ceilings, and UI debounce guards to protect user API balances.
-
-#### ACT-M9: Register NetworkCallback for Fast Cellular/Wi-Fi Handover
-* **Sources:** `zoom_out_report.md` (ZO-7), `critic_report.md` (CRIT-9)
-* **Resolution**: Register an Android `ConnectivityManager.NetworkCallback` to detect network interface handovers, immediately terminate stale sockets, and initiate fast reconnect without waiting for 15-second ping timeouts.
-
-#### ACT-M10: Add Success Metrics, Formal Risk Matrix, and Fallback Strategy
-* **Sources:** `critic_report.md` (CRIT-10)
-* **Resolution**: Add quantitative SLIs/SLOs (cold start time, vision latency p95, reconnect time), an explicit Risk Matrix with mitigations, and an automated fallback workflow.
-
-#### ACT-M11: Reformat Technical Plan and Alternatives Considered to Standard Template
-* **Sources:** `critic_report.md` (CRIT-11)
-* **Resolution**: Structure `## Technical Plan` with explicit `### Component Architecture` and `### Data Models & APIs` subheadings. Reformat alternatives as bullet points under `## Alternatives Considered`.
-
-#### ACT-M12: Calibrate Claims, Strip Fluff, and Standardize Grammatical Mood
-* **Sources:** `critic_report.md` (CRIT-12), `implementation_readiness_report.md` (IR-15)
-* **Resolution**: Replace absolute claims ("100% PC Independence") with objective statements ("Standalone PC-Independent Operation"). Remove conversational wrappers (`Rejected by author:`). Standardize all 20 implementation items on active imperative verbs.
-
-#### ACT-M13: Add `network_security_config.xml` to Modify Cleartext Traffic
-* **Sources:** `implementation_readiness_report.md` (IR-11)
-* **Resolution**: Add `android/app/src/main/res/xml/network_security_config.xml` (Modify) to the plan to restrict cleartext permissions strictly to `127.0.0.1` and local private subnets for workstation mode.
-
-#### ACT-M14: Add Missing Method `getHistory` to `NotebookLMClient`
-* **Sources:** `implementation_readiness_report.md` (IR-13)
-* **Resolution**: Add `suspend fun getHistory(notebookId: String): List<ConversationTurn>` to `NotebookLMClient`.
-
-#### ACT-M15: Reconcile `SettingsInfo.kt` vs `SettingsScreen.kt`
-* **Sources:** `implementation_readiness_report.md` (IR-14)
-* **Resolution**: State explicitly that `SettingsScreen.kt` replaces or embeds the existing `SettingsInfo.kt`.
-
-#### ACT-M16: Calibrate Verification Plan Latency Benchmarks & Test Assertions
-* **Sources:** `implementation_readiness_report.md` (IR-16)
-* **Resolution**: Expand the unit test suite with explicit mock HTTP status codes (200, 401, 429, 503) and concrete assertions. Calibrate hardware test criteria to observable user behaviors (<10s response, duplex stability without acoustic feedback).
-
----
-
-### 🟢 Nits (Low Priority Improvements)
-
-* **ACT-N1**: Use `Bitmap.Config.ARGB_8888` on Galaxy S24+ instead of `RGB_565` to avoid color banding on appliance dials and text.
-* **ACT-N2**: Remove orphaned reference to "Airflow" and frame target demographic requirements neutrally.
-* **ACT-N3**: Clarify the "100 MiB rolling memory budget" definition (RAM vs disk cache vs database pruning).
-* **ACT-N4**: Normalize Markdown dividers to `---`, reorder metadata to `Status`, `Author`, `Date`, and strip redundant phrasing.
-
----
-
-## Traceability Matrix
-
-| Raw Finding ID | Review Stage & Reviewer Lens | Severity | Consolidated Action Item |
+| Review Stage | Subagent Persona | Status | Primary Audit Focus |
 | :--- | :--- | :--- | :--- |
-| **ZO-1** | Stage 5: `egm-zoom-out` | Blocker | **ACT-B1**: Discontinue Reverse-Engineering NotebookLM |
-| **ZO-2** | Stage 5: `egm-zoom-out` | Major | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **ZO-3** | Stage 5: `egm-zoom-out` | Major | **ACT-B5**: Eliminate QR Scanning via ML Kit OCR |
-| **ZO-4** | Stage 5: `egm-zoom-out` | Major | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **ZO-5** | Stage 5: `egm-inventive-catalyst` | Major | **ACT-B2**: Eliminate Software Echo Zeroing |
-| **ZO-6** | Stage 5: `egm-inventive-catalyst` | Nit | **ACT-M6**: Specify Resource Economics & Adaptive Heartbeat |
-| **ZO-7** | Stage 5: `egm-inventive-catalyst` | Nit | **ACT-M9**: Register NetworkCallback for Handover |
-| **ZO-8** | Stage 5: `egm-zoom-out` | Nit | **ACT-M12**: Calibrate Claims & Strip Fluff |
-| **COMP-1** | Stage 6: `egm-comprehension` | Blocker | **ACT-B1**: Discontinue Reverse-Engineering NotebookLM |
-| **COMP-2** | Stage 6: `egm-comprehension` | Blocker | **ACT-B3**: Fix Wi-Fi Workstation Networking Fallacy |
-| **COMP-3** | Stage 6: `egm-comprehension` | Blocker | **ACT-M1**: Define Active Cloud Provider Routing |
-| **COMP-4** | Stage 6: `egm-comprehension` | Major | **ACT-M2**: Specify MOSS Live Downlink Wire Protocol |
-| **COMP-5** | Stage 6: `egm-comprehension` | Major | **ACT-M3**: Remove Phantom PC Secret Sync Button |
-| **COMP-6** | Stage 6: `egm-comprehension` | Major | **ACT-M4**: Provide Concrete Definitions for Domain Types |
-| **COMP-7** | Stage 6: `egm-comprehension` | Major | **ACT-B8**: Add Missing Composition Root Files |
-| **COMP-8** | Stage 6: `egm-comprehension` | Major | **ACT-M1**: Define Active Cloud Provider Routing |
-| **COMP-9** | Stage 6: `egm-comprehension` | Nit | **ACT-N2**: Remove Orphaned "Airflow" Reference |
-| **COMP-10** | Stage 6: `egm-comprehension` | Nit | **ACT-B7**: Correct Non-Existent Filepath for PhotoEncoder |
-| **COMP-11** | Stage 6: `egm-comprehension` | Nit | **ACT-B9**: Fix Heading Hierarchy & Strip Ideation Residue |
-| **COMP-12** | Stage 6: `egm-comprehension` | Nit | **ACT-N3**: Clarify 100 MiB Memory Budget Definition |
-| **COMP-13** | Stage 6: `egm-comprehension` | Nit | **ACT-N2**: Remove Orphaned Demographic Assumptions |
-| **COMP-14** | Stage 6: `egm-comprehension` | Nit | **ACT-B5**: Eliminate QR Scanning via ML Kit OCR |
-| **CRIT-1** | Stage 7: `egm-design` | Blocker | **ACT-B1**: Discontinue Reverse-Engineering NotebookLM |
-| **CRIT-2** | Stage 7: `egm-design` | Blocker | **ACT-B2**: Eliminate Software Echo Zeroing |
-| **CRIT-3** | Stage 7: `egm-structural` | Blocker | **ACT-B9**: Fix Heading Hierarchy & Strip Ideation Residue |
-| **CRIT-4** | Stage 7: `egm-structural` / `style` | Blocker | **ACT-B9**: Fix Heading Hierarchy & Strip Ideation Residue |
-| **CRIT-5** | Stage 7: `egm-design` | Major | **ACT-M5**: Define Background Lifecycle & CameraX State |
-| **CRIT-6** | Stage 7: `egm-design` | Major | **ACT-M6**: Specify Resource Economics & Adaptive Heartbeat |
-| **CRIT-7** | Stage 7: `egm-design` | Major | **ACT-M7**: Clarify Audio Routing Model During MOSS |
-| **CRIT-8** | Stage 7: `egm-design` | Major | **ACT-M8**: Implement Client-Side Rate Limits & Caps |
-| **CRIT-9** | Stage 7: `egm-design` | Major | **ACT-M9**: Register NetworkCallback for Handover |
-| **CRIT-10** | Stage 7: `egm-design` / `structural` | Major | **ACT-M10**: Add Success Metrics, Risk Matrix & Fallback |
-| **CRIT-11** | Stage 7: `egm-structural` | Major | **ACT-M11**: Reformat Technical Plan to Standard Template |
-| **CRIT-12** | Stage 7: `egm-style` | Major | **ACT-M12**: Calibrate Claims & Strip Fluff |
-| **CRIT-13** | Stage 7: `egm-design` / `structural` | Nit | **ACT-N1**, **ACT-N4**: Formatting, Dividers & Color Banding |
-| **IZO-1** | Stage 8: `egm-zoom-out` | Blocker | **ACT-B1**: Discontinue Reverse-Engineering NotebookLM |
-| **IZO-2** | Stage 8: `egm-zoom-out` | Blocker | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **IZO-3** | Stage 8: `egm-zoom-out` | Blocker | **ACT-B3**: Fix Wi-Fi Workstation Networking Fallacy |
-| **IZO-4** | Stage 8: `egm-zoom-out` | Major | **ACT-B2**: Eliminate Software Echo Zeroing |
-| **IZO-5** | Stage 8: `egm-zoom-out` | Major | **ACT-B5**: Eliminate QR Scanning via ML Kit OCR |
-| **IZO-6** | Stage 8: `egm-zoom-out` | Major | **ACT-M1**: Define Active Cloud Provider Routing |
-| **IZO-7** | Stage 8: `egm-zoom-out` | Nit | **ACT-M12**: Calibrate Claims & Strip Fluff |
-| **IR-1** | Stage 9: `egm-implementation-readiness` | Blocker | **ACT-B1**: Discontinue Reverse-Engineering NotebookLM |
-| **IR-2** | Stage 9: `egm-implementation-readiness` / `codebase` | Blocker | **ACT-B5**: Eliminate QR Scanning via ML Kit OCR |
-| **IR-3** | Stage 9: `egm-implementation-readiness` / `codebase` | Blocker | **ACT-B6**: Add Kotlin Serialization & MockWebServer |
-| **IR-4** | Stage 9: `egm-codebase-details` | Blocker | **ACT-B7**: Correct Non-Existent Filepath for PhotoEncoder |
-| **IR-5** | Stage 9: `egm-codebase-details` | Blocker | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **IR-6** | Stage 9: `egm-codebase-details` | Blocker | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **IR-7** | Stage 9: `egm-implementation-readiness` / `codebase` | Blocker | **ACT-B8**: Add Missing Composition Root Files |
-| **IR-8** | Stage 9: `egm-implementation-readiness` / `codebase` | Blocker | **ACT-B8**: Add Missing Composition Root Files |
-| **IR-9** | Stage 9: `egm-implementation-readiness` / `codebase` | Major | **ACT-M1**: Define Active Cloud Provider Routing |
-| **IR-10** | Stage 9: `egm-implementation-readiness` | Major | **ACT-B4**: Reuse Existing Interfaces & Transports |
-| **IR-11** | Stage 9: `egm-implementation-readiness` / `style` | Major | **ACT-M13**: Add network_security_config.xml |
-| **IR-12** | Stage 9: `egm-implementation-readiness` | Major | **ACT-M2**: Specify MOSS Live Downlink Wire Protocol |
-| **IR-13** | Stage 9: `egm-codebase-details` | Major | **ACT-M14**: Add Missing Method getHistory |
-| **IR-14** | Stage 9: `egm-codebase-details` | Major | **ACT-M15**: Reconcile SettingsInfo.kt vs SettingsScreen.kt |
-| **IR-15** | Stage 9: `egm-style` | Major | **ACT-M12**: Calibrate Claims & Strip Fluff |
-| **IR-16** | Stage 9: `egm-implementation-readiness` / `style` | Major | **ACT-M16**: Calibrate Verification Plan Benchmarks |
-| **IR-17** | Stage 9: `egm-codebase-details` / `style` | Nit | **ACT-N4**: Formatting, Constants & Redundancies |
+| **Stage 5** | `egm-zoom-out` & `egm-inventive-catalyst` | completed | High-altitude architecture, YAGNI, TRIZ inventive contradictions |
+| **Stage 6** | `egm-comprehension` | completed | Unambiguous terminology, developer mental model, contract fidelity |
+| **Stage 7** | `egm-design`, `egm-structural`, `egm-style` | completed | Architectural trade-offs, security invariants, structural layout |
+| **Stage 8** | `egm-zoom-out` | completed | Intermediate synthesis, codebase reuse, minimal viable architecture |
+| **Stage 9** | `egm-implementation-readiness`, `egm-codebase-details` | completed | Step-by-step implementability, symbol verification, test coverage |
+
+---
+
+## 3. Consolidated Actionable Findings
+
+### 🔴 Blockers (Must Remediate Before Implementation)
+
+#### B1: Eliminate Fictitious Protocol Action `session.attach` and Backend Relay Buffer Assumptions
+* **Reported in:** Stage 6 (#3), Stage 8 (#1), Stage 9 (#1)
+* **Finding:** The RFC specifies that upon cellular reconnection, Android transmits `session.attach` to resume duplex streaming from a stateful backend buffer. In reality:
+  * Neither `MossLiveProtocol.kt` nor `backend/app/moss_live.py` recognizes `session.attach`. Transmitting it triggers an immediate `invalid_event` error and closes the socket.
+  * The backend currently terminates upstream connections immediately on client disconnect; there is zero buffering or anchoring state.
+* **Resolution:** Drop `session.attach` and backend relay buffer abstractions entirely. On cellular handover reconnect, execute a standard client-side WebSocket connection handshake (`media.mode` + `mic_state(true)`), resetting turns cleanly without speculative protocol extensions.
+
+#### B2: Replace Headless SYSTEM Service with User-Level Windows Host Automation
+* **Reported in:** Stage 5 (#2), Stage 6 (#2), Stage 8 (#2)
+* **Finding:** Goal G5 mandates packaging the tunnel daemon and FastAPI backend as headless Windows `SYSTEM` services before user login. However:
+  * Google NotebookLM depends on a persistent Playwright browser profile (`storage_state.json`) which fails under `NT AUTHORITY\SYSTEM` due to Windows Session 0 desktop isolation.
+  * Windows development machines operate with an active user login.
+* **Resolution:** Run `cloudflared` as a user-level process or Task Scheduler task running under the user account alongside FastAPI in `Restart Backend.cmd` and `scripts/run_backend.ps1`. This ensures Playwright browser access remains functional without Session 0 crashes.
+
+#### B3: Settle WAN Endpoint Addressability and Domain Persistence Across Reboots
+* **Reported in:** Stage 5 (#1), Stage 6 (#1), Stage 7 (#2), Stage 8 (#3)
+* **Finding:** Open Question 1 leaves WAN persistence unresolved, while Component 1 provides an incomplete YAML snippet. Quick tunnels (`trycloudflare.com`) generate a new random domain every restart, stranding older adults after PC reboots.
+* **Resolution:** Authoritatively specify the connection model:
+  1. For production: A free Cloudflare Named Tunnel with a static hostname and credentials file.
+  2. For zero-config development: A persistent background process with automated URL discovery and pairing output in `setup_remote_tunnel.ps1`.
+
+#### B4: Preserve Dual-Binding (`0.0.0.0:8000`) to Prevent Breaking Local Wi-Fi
+* **Reported in:** Stage 7 (#1), Stage 8 (#5)
+* **Finding:** Goal G7 specifies binding strictly to `127.0.0.1:8000`, which immediately breaks local Wi-Fi and mobile hotspot discovery (`ServerScanner.kt`), forcing all home traffic out through Cloudflare WAN.
+* **Resolution:** Maintain FastAPI binding to `0.0.0.0:8000` (accepting both loopback and local Wi-Fi LAN traffic), protected by private subnet NAT and Windows Firewall.
+
+#### B5: Fix Reconnect Enum States & Microphone Buffer Overflow
+* **Reported in:** Stage 9 (#1, #3)
+* **Finding:** `MossConnectionState` has no `ACTIVE_CALL` state (the active states are `LISTENING` and `SPEAKING`). If the microphone continues capturing audio during a 5-second socket drop, the 32 KB `MAX_AUDIO_BACKLOG_BYTES` buffer overflows, crashing the call.
+* **Resolution:** Target states `LISTENING` and `SPEAKING`. During transport drops, discard or pause microphone capture, pause downlink audio playback, and update `MossLiveTransportListener` to pass close codes.
+
+---
+
+### 🟡 Major Findings (Architectural Refinements)
+
+#### M1: Eliminate Redundant Deliverables for Already-Implemented Infrastructure
+* **Reported in:** Stage 8 (#4)
+* **Finding:** Bearer token authentication, backend constant-time comparison (`secrets.compare_digest`), WebSocket token checks, Android storage (`BackendEndpoint.kt`), and Settings UI text fields (`SettingsInfo.kt`) already exist and work in the codebase.
+* **Resolution:** Strike Bearer token creation and Settings UI creation from the list of new deliverables. Focus solely on endpoint port normalization and tunnel automation.
+
+#### M2: Replace Brittle Domain Sniffing with Universal Scheme/Port Normalization
+* **Reported in:** Stage 8 (#6)
+* **Finding:** Sniffing specifically for `.trycloudflare.com` or `.ts.net` inside `BackendEndpoint.kt` breaks custom domains or alternative proxies.
+* **Resolution:** Implement a protocol-driven rule: If the host contains an `https://` / `wss://` scheme, or is a hostname without an explicit port and not an IPv4 address, default to port 443 and never append `:8000`.
+
+#### M3: Fix Discovery Priority Inversion & Add Mobile Transport Awareness
+* **Reported in:** Stage 5 (#3, #7), Stage 8 (#9)
+* **Finding:** Probing the remote tunnel URL before local subnet scanning causes phone traffic to route over the WAN even when connected to home Wi-Fi.
+* **Resolution:** Use `ConnectivityManager` active network transport: when on `TRANSPORT_CELLULAR`, immediately route to the remote tunnel; when on `TRANSPORT_WIFI`, probe local LAN first and fallback to remote.
+
+#### M4: Eliminate Security-Compromising Query Parameter Bearer Fallback
+* **Reported in:** Stage 5 (#8), Stage 8 (#7)
+* **Finding:** Passing Bearer tokens in URL query strings (`?token=...`) exposes credentials in Cloudflare edge logs and proxy logs.
+* **Resolution:** Native Android OkHttp fully supports custom headers during WebSocket upgrades (`Request.Builder().header("Authorization", "Bearer ...")`). Drop query parameter authentication.
+
+#### M5: Correct WebSocket Authentication Architecture Mapping
+* **Reported in:** Stage 6 (#5), Stage 7 (#3)
+* **Finding:** Architecture diagrams indicate WebSocket connections route through `RequestMiddleware`. Starlette's `RequestMiddleware` ignores WebSocket scopes; WebSocket authentication is handled inside `moss_live.py`.
+* **Resolution:** Update diagram and specifications to accurately reflect WebSocket authentication inside `backend/app/moss_live.py`.
+
+---
+
+### 🟢 Nits & Style Improvements
+
+* **N1: Transition Header Status:** Update `Status: Approved` to `Status: In Review` until blockers are remediated.
+* **N2: Fix Mermaid Diagram Arrow Syntax:** Replace invalid `<== label ==>` syntax on Line 125 with standard Mermaid `Edge <-->|"Multiplexed Outbound Tunnel"| TunnelService`.
+* **N3: Ingress Catch-All Rule:** Append mandatory fallback `- service: http_status:404` to Cloudflare configuration snippets.
+* **N4: Clarify WebSocket Close Code 1006:** Note that `1006` is locally synthesized by OkHttp upon transport drop rather than sent by the server.
+* **N5: Fix File Placement in Scanner Step:** Correct Step 2 in Phase 1 to note that `val fullHost` logic was in `MossLiveTransport.kt` and `LiveAssistant.kt`, not `ServerScanner.kt`.
+
+---
+
+## 4. Traceability Matrix
+
+| Raw Finding Source | Consolidated Finding ID | Category | Target Component / File | Resolution |
+| :--- | :--- | :--- | :--- | :--- |
+| `implementation_readiness_report.md` #1, `comprehension_report.md` #3, `intermediate_zoom_out_report.md` #1 | **B1** | Protocol Fidelity | `MossLiveSessionController.kt`, `moss_live.py` | Drop `session.attach`; use standard client reconnect handshake |
+| `zoom_out_report.md` #2, `comprehension_report.md` #2, `intermediate_zoom_out_report.md` #2 | **B2** | Service Lifecycle | `setup_remote_tunnel.ps1`, `Restart Backend.cmd` | Use user-session Task Scheduler / startup task to preserve Playwright |
+| `critic_report.md` #2, `zoom_out_report.md` #1, `intermediate_zoom_out_report.md` #3 | **B3** | Network Topology | `config.yml`, `setup_remote_tunnel.ps1` | Settle on static Named Tunnel hostname or automated discovery |
+| `critic_report.md` #1, `intermediate_zoom_out_report.md` #5 | **B4** | Network Invariants | `scripts/run_backend.ps1`, `BackendEndpoint.kt` | Preserve `0.0.0.0:8000` binding for local Wi-Fi / hotspot |
+| `implementation_readiness_report.md` #1, #3 | **B5** | State Machine & Buffers | `MossLiveSessionController.kt` | Target `LISTENING`/`SPEAKING`, discard mic buffers during drops |
+| `intermediate_zoom_out_report.md` #4 | **M1** | Codebase Reuse | `BackendEndpoint.kt`, `SettingsInfo.kt` | Acknowledge existing Bearer auth; focus solely on port normalization |
+| `intermediate_zoom_out_report.md` #6 | **M2** | URI Resolution | `BackendEndpoint.kt` | Protocol-based normalization without brittle vendor domain sniffing |
+| `zoom_out_report.md` #3, #7, `intermediate_zoom_out_report.md` #9 | **M3** | Transport Routing | `ServerScanner.kt` | Prioritize local Wi-Fi when on Wi-Fi; route remote on cellular |
+| `zoom_out_report.md` #8, `intermediate_zoom_out_report.md` #7 | **M4** | Edge Security | `MossLiveTransport.kt` | Use header-only Bearer authentication; drop query param fallback |
+| `critic_report.md` #3, `comprehension_report.md` #5 | **M5** | Architecture Spec | `private_remote_cellular_connectivity.md` | Fix diagram to show WebSocket auth in `moss_live.py` |
+| `critic_report.md` #5, #7, #8, #10 | **N1-N5** | Syntax & Formatting | `private_remote_cellular_connectivity.md` | Fix Mermaid arrows, ingress rules, status header, and close code notes |

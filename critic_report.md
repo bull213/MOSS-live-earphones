@@ -1,126 +1,129 @@
-# Stage 7: Critic Review Report
+# Design Critic Report: Private Remote Cellular Connectivity for AI Visual Assistant
 
-**Target:** `docs/designs/backend_migration_to_android.md` (Lines 1–339)  
-**Standard:** `resources/document_standards/feature-spec-standard.md`  
-**Reviewers:** `egm-design` (Hostile Design Critic), `egm-structural` (Structural Layout Validator), `egm-style` (Technical Copy Editor)
+**Target Document:** `docs/designs/private_remote_cellular_connectivity.md`
+**Scope Audited:** Lines 1–239
+**Review Stage:** Stage 7 (Design Critic)
+**Reviewer Lenses:** `egm-design`, `egm-structural`, `egm-style`
 
 ---
 
 ## Reviewer Status
 
-| Reviewer | Status |
-| :--- | :--- |
-| `egm-design` | completed |
-| `egm-structural` | completed |
-| `egm-style` | completed |
+| Reviewer Lens | Focus Area | Status |
+| :--- | :--- | :--- |
+| `egm-design` | Architecture, Invariants, Protocols, Security, Failure Modes | completed |
+| `egm-structural` | Document Structure, Section Completeness, Traceability, Syntax | completed |
+| `egm-style` | Clarity, Technical Precision, Redundancy, Terminology | completed |
 
 ---
 
 ## Prioritized Findings (Blockers -> Major -> Nits)
 
-### 1. Infeasible & Fragile NotebookLM Mobile Client (WebView Google Auth & `batchexecute` RPCs) - Severity: Blocker
+### 1. Loopback Binding vs. Local Wi-Fi Coexistence Contradiction - Severity: Blocker
 * **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 58–60 (Question 1), Lines 86–96 (CUJ 3), Lines 256–268 (Section 2.4)
-* **Discrepancy Description**: The design relies on loading `https://accounts.google.com` in an embedded `WebView`, spoofing `User-Agent`, extracting session cookies (`SIDTS`, `__Secure-1PSID`), and calling internal `batchexecute` web RPCs directly from Kotlin.
-  1. **Google Policy Block**: Google actively blocks Google Account login inside WebViews via modern anti-bot heuristics (`window.navigator.userAgentData`, WebGL/canvas rendering, and TLS Client Hello fingerprints). Users will encounter the unrecoverable *"Couldn't sign you in. This browser or app may not be secure"* error.
-  2. **Protocol Infeasibility**: `batchexecute` requires an anti-CSRF token (`at`/`SNlM0e`) and build labels embedded in the page HTML, not accessible via `CookieManager`. Direct calls will fail with HTTP 400 Bad Request.
-  3. **High Maintenance Fragility**: Google's internal web RPC schemas and method IDs are private and change without notice. Re-implementing a reverse-engineered client in Kotlin without Playwright browser recovery creates an unmaintainable failure mode on mobile networks.
-  4. **Security Risk**: Terminal QR code sync (`Show Auth QR.cmd`) exposes raw session cookies granting full Google account access in cleartext.
-* **Rationale & Recommendation**: Re-evaluate the mobile document retrieval architecture. If Google NotebookLM is retained, document retrieval should route through the authenticated workstation backend (or a dedicated server proxy with headless browser recovery). If 100% standalone mobile operation is required, evaluate official cloud APIs (e.g., OpenAI Assistant/File Search or Gemini API with cached file context).
+* **Affected Scope:** Lines 46, 81–83, 119
+* **Discrepancy Description:** 
+  Goal G7 (Line 46) and the Architecture diagram (Line 119) state: *"Host Loopback Isolation: The FastAPI backend binds exclusively to 127.0.0.1:8000; no inbound ports are opened on the home internet router."* However, CUJ 3 (*"Seamless Home/Away Fallback"*, lines 81–83) and Phase 4 (Line 298) specify: *"The app probes USB loopback and local Wi-Fi first. If available, it uses the zero-latency local route; if disconnected, it routes over the remote tunnel URL without user intervention."* 
+  In standard TCP socket networking, a server socket bound strictly to `127.0.0.1` will refuse/drop all incoming packets originating from external network interfaces (such as a local Wi-Fi LAN subnet `192.168.x.x` or `10.x.x.x`). Local Wi-Fi scanning (`ServerScanner.kt`) will fail 100% of the time if the server only binds to loopback.
+* **Rationale & Recommendation:** 
+  These two architectural invariants are mutually contradictory. If local Wi-Fi direct connection is required, FastAPI must bind to `0.0.0.0:8000` or a specific LAN adapter with Windows Firewall/router NAT isolation. Alternatively, if strict loopback isolation is paramount, the document must state that Wi-Fi mode connects through a local proxy/forwarder, or explicitly deprecate direct Wi-Fi LAN access in favor of USB ADB reverse tunneling and Cloudflare Tunnel.
 
 ---
 
-### 2. Muted Uplink Echo Suppression Destroys Full-Duplex Conversational Voice (Barge-In) - Severity: Blocker
+### 2. Cloudflare Tunnel Subdomain Persistence Defect - Severity: Blocker
 * **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 83–85 (CUJ 2), Lines 269–275 (Section 2.5)
-* **Discrepancy Description**: `MossEchoSuppressor` is specified as zeroing uplink PCM audio during speaker playback with a 200ms decay grace period. Zeroing capture buffers enforces half-duplex walkie-talkie operation: the user cannot interrupt (barge in on) MOSS Live while it speaks, and the 200ms decay guard cuts off the first syllables of subsequent user speech.
-* **Rationale & Recommendation**: Remove zero-buffer silencing. Implement true Acoustic Echo Cancellation using Android's platform `AcousticEchoCanceler` attached to the `AudioRecord` session ID with `AudioSource.VOICE_COMMUNICATION`. For advanced echo control, integrate WebRTC AEC3 DSP to subtract speaker reference audio while keeping near-end user speech intact for barge-in detection.
+* **Affected Scope:** Lines 63–65, 198–203, 212
+* **Discrepancy Description:** 
+  Open Question 1 (Lines 63–65) leaves unresolved: *"Domain Configuration vs. Named Quick Tunnels: Should the setup script support automated registration of a free persistent Cloudflare subdomain, or can an automated tunnel daemon persist an assigned tunnel identifier across reboots?"* In Component 1 (Lines 198–203), the configuration file is shown without a tunnel UUID or credentials file:
+  ```yaml
+  ingress:
+    - service: http://127.0.0.1:8000
+  ```
+  Quick tunnels (`trycloudflare.com`) assign a randomized ephemeral hostname upon every process launch and cannot be installed as persistent Windows services via `cloudflared service install`. Named tunnels require persistent credentials and Cloudflare DNS routing. If the host PC reboots while the user is away from home, a quick tunnel will restart with a completely new URL, permanently stranding the Android client with zero automated discovery mechanism.
+* **Rationale & Recommendation:** 
+  A design document cannot be marked `Status: Approved` while the core routing mechanism across reboots remains unresolved. Authoritatively resolve Question 1: mandate a named tunnel with a persistent tunnel ID, credentials file path, and domain in `config.yml`, or specify an automated out-of-band dynamic DNS / URL-publishing mechanism.
 
 ---
 
-### 3. Heading Hierarchy Violations in Document Structure - Severity: Blocker
+### 3. WebSocket Authentication Bypass in HTTP Middleware - Severity: Major
+* **Reviewer Lens:** `egm-design`
+* **Affected Scope:** Lines 44–45, 120, 154–157
+* **Discrepancy Description:** 
+  Goal G6 and the architecture diagram specify `AuthMiddleware: RequestMiddleware (Constant-Time Bearer Auth)` to enforce Bearer token access control across HTTP and WebSocket endpoints. In FastAPI / Starlette, standard HTTP middleware derived from `BaseHTTPMiddleware` only intercepts HTTP requests (`scope["type"] == "http"`). WebSocket connections (`scope["type"] == "websocket"`) completely bypass `BaseHTTPMiddleware`.
+* **Rationale & Recommendation:** 
+  If authentication is only implemented in `RequestMiddleware`, the full-duplex conversational audio/video WebSocket endpoint (`/v1/realtime/moss-live`) will remain completely unauthenticated over the public internet tunnel. Explicitly specify whether authentication is enforced via raw ASGI middleware that validates both `http` and `websocket` scopes, or via an explicit token validation check inside the `/v1/realtime/moss-live` WebSocket endpoint handler prior to `websocket.accept()`.
+
+---
+
+### 4. Unauthenticated `/health` Endpoint Public Information Leakage & Flood Vector - Severity: Major
+* **Reviewer Lens:** `egm-design`
+* **Affected Scope:** Lines 44, 149, 178
+* **Discrepancy Description:** 
+  The specification mandates that `GET /health` is unauthenticated so that `ServerScanner.kt` can probe connectivity over HTTPS port 443 without credentials. Because the Cloudflare tunnel maps directly to the FastAPI backend, `/health` is exposed directly to the public internet. If `/health` returns internal diagnostic metadata, dependency status, or server details, it leaks system intelligence to public scanners. Furthermore, lacking authentication or rate limiting, it can be abused as a denial-of-service vector against the home PC.
+* **Rationale & Recommendation:** 
+  Specify that `/health` returns a strictly static, opaque payload (e.g., `{"status": "ok"}`) with zero host information, and specify origin-level or Cloudflare edge rate-limiting to mitigate automated scanning floods.
+
+---
+
+### 5. Premature "Approved" Status with Unresolved Open Questions - Severity: Major
 * **Reviewer Lens:** `egm-structural`
-* **Affected Scope:** Lines 9–55 (`## Overview`, `## The Problem`, `## Goals`, `## Non-Goals`)
-* **Discrepancy Description**: `The Problem` (line 21), `Goals` (line 35), and `Non-Goals` (line 48) are formatted as top-level `##` (H2) headers rather than `###` (H3) subheadings nested under `## Overview`. This breaks the document tree hierarchy and violates the Feature Specification Standard template.
-* **Rationale & Recommendation**: Re-nest `### The Problem`, `### Goals`, and `### Non-Goals` under `## Overview`.
+* **Affected Scope:** Lines 4, 61–65
+* **Discrepancy Description:** 
+  The metadata header sets `Status: Approved` (Line 4), yet Section "Open Questions" (Lines 61–65) contains two open architectural questions (domain configuration persistence across reboots, and mobile reconnection backoff tuning).
+* **Rationale & Recommendation:** 
+  In formal RFC/design review governance, an architectural specification cannot be marked "Approved" while fundamental design questions that affect service automation (Goal G5) and roaming resilience (CUJ 2) remain unanswered. Update the status to `Status: In Review` or resolve both open questions directly in the technical plan.
 
 ---
 
-### 4. Ideation Residue in Section Heading ("Option C") - Severity: Blocker
-* **Reviewer Lens:** `egm-structural`, `egm-style`
-* **Affected Scope:** Line 256 (`#### 2.4 Option C NotebookLM Mobile Client...`)
-* **Discrepancy Description**: Section 2.4 leaks conversational ideation labeling ("Option C") into the normative architecture document, while sibling sections have no option designations.
-* **Rationale & Recommendation**: Rename symmetrically to `#### 2.4 Mobile NotebookLM Client (DirectMobileNotebookLMClient.kt)`.
-
----
-
-### 5. Unmitigated Android Background Execution & CameraX Restrictions - Severity: Major
-* **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 38–39 (Goal G2), Lines 76–85 (CUJ 2), Lines 238–250 (Section 2.3)
-* **Discrepancy Description**: Android 12+ strictly prohibits background camera capture. Turning off the screen, putting the phone in a pocket, or switching apps immediately halts `CameraX` / `Camera2` sessions, causing unhandled exceptions if frame capture coroutines continue.
-* **Rationale & Recommendation**: Explicitly define the camera lifecycle state machine. When the screen turns off or the app pauses, degrade gracefully to audio-only duplex streaming (`video.state: false`), and bind the session to an Android 14+ compatible Foreground Service with `camera|microphone` types.
-
----
-
-### 6. Excessive Cellular Bandwidth Consumption - Severity: Major
-* **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 38–39, 238–255, 328–333
-* **Discrepancy Description**: Uncompressed 16 kHz uplink PCM (32 KB/s) + 48 kHz downlink PCM (96 KB/s) + 1500ms JPEG heartbeat (~53 KB/s) totals >650 MB/hour over cellular data, causing rapid data exhaustion, thermal buildup, and battery drain.
-* **Rationale & Recommendation**: Add an Economics & Data Footprint section. Investigate compressed audio support (Opus) on `api.mosi.cn`, and implement an adaptive camera frame rate controller (5000ms heartbeat on static scenes, bursting to 1000–1500ms on motion or visual intent).
-
----
-
-### 7. Audio Routing Contention Between MOSS and Moonshine STT - Severity: Major
-* **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 41–43 (Goals G5, G6), Lines 86–96 (CUJ 3), Lines 269–275 (Section 2.5)
-* **Discrepancy Description**: If `PhoneAudioCaptureRouter` routes solely to MOSS during live calls, local Moonshine STT is unpowered and cannot detect spoken switching commands (`"Use notebook Neuroscience"`). Conversely, running Moonshine ONNX streaming concurrently with MOSS WebSocket audio and CameraX JPEG encoding will heavily saturate CPU cores.
-* **Rationale & Recommendation**: Clarify that hands-free switching during active MOSS Live is driven by inspecting MOSS server-side transcripts, and that local Moonshine ONNX STT is suspended during MOSS Live to preserve CPU and battery.
-
----
-
-### 8. Missing Client-Side Spend Ceilings & Rate-Limiting for BYOK Keys - Severity: Major
-* **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 43–44, 218–225, 276–284
-* **Discrepancy Description**: The PC backend enforced strict request budgets (`MAX_IMAGE_BYTES`, `agent_max_rounds`, `agent_max_estimated_usd`), but the proposed mobile client has no client-side rate limits, retry ceilings, or spending safeguards. Network retries or rapid button presses can exhaust user API credits.
-* **Rationale & Recommendation**: Implement client-side turn rate limiting (e.g., max 10 requests/min), retry ceilings, and UI debounce guards.
-
----
-
-### 9. Wi-Fi / Cellular Handover Socket Black Holes - Severity: Major
-* **Reviewer Lens:** `egm-design`
-* **Affected Scope:** Lines 251–255, 334–336
-* **Discrepancy Description**: When transitioning between Wi-Fi and 5G, TCP sockets enter silent black holes. Relying on a 15-second ping interval leaves the audio stream frozen for 15–30+ seconds before reconnecting.
-* **Rationale & Recommendation**: Register an Android `ConnectivityManager.NetworkCallback` to detect interface handovers proactively, immediately terminate stale sockets, and initiate fast reconnection.
-
----
-
-### 10. Missing Success Metrics, Formal Risk Matrix, and Rollback Strategy - Severity: Major
-* **Reviewer Lens:** `egm-design`, `egm-structural`
-* **Affected Scope:** Whole feature specification scope (Lines 1–339)
-* **Discrepancy Description**: The specification omits quantitative SLIs/SLOs (cold start time, vision latency p95, reconnect latency, battery drain rate), a formal risk matrix (account suspension, API changes, carrier blocking), and an automated fallback/rollback workflow.
-* **Rationale & Recommendation**: Add dedicated `## Success Metrics`, `## Risk Matrix & Mitigations`, and `## Fallback Strategy` sections.
-
----
-
-### 11. Technical Plan & Alternatives Hierarchy Deviation - Severity: Major
+### 6. Premature Placement of "Open Questions" Section - Severity: Major
 * **Reviewer Lens:** `egm-structural`
-* **Affected Scope:** Lines 107–284, Lines 287–318
-* **Discrepancy Description**: Under `## Technical Plan`, mandatory standard headings `### Component Architecture` and `### Data Models & APIs` are missing or buried. Under `## Alternatives Considered`, rejected options are promoted to full H3 headers rather than structured bullet points.
-* **Rationale & Recommendation**: Structure `## Technical Plan` with explicit `### Component Architecture` and `### Data Models & APIs` subheadings, and reformat alternatives as bullet points under `## Alternatives Considered`.
+* **Affected Scope:** Lines 61–65
+* **Discrepancy Description:** 
+  Section "Open Questions" is placed directly after "Non-Goals" (Line 52) and precedes "Critical User Journeys" (Line 68) and "Technical Plan (Architecture)" (Line 87).
+* **Rationale & Recommendation:** 
+  Open questions refer to implementation nuances and architectural trade-offs that the reader cannot evaluate without first understanding the system architecture. Move the "Open Questions" section after "Alternatives Considered" and immediately preceding "Detailed Implementation Plan".
 
 ---
 
-### 12. Absolute Claims, Fluff, and Conversational Rejection Wrappers - Severity: Major
+### 7. Invalid Bidirectional Thick Arrow Syntax in Mermaid Diagram - Severity: Nit
+* **Reviewer Lens:** `egm-structural`
+* **Affected Scope:** Line 125
+* **Discrepancy Description:** 
+  Line 125 contains: `Edge <== Multiplexed Outbound Tunnel ==> TunnelService`. Mermaid flowchart syntax does not support `<== label ==>` for thick bidirectional labelled arrows; this will cause syntax parsing errors in standard Markdown/Mermaid viewers.
+* **Rationale & Recommendation:** 
+  Replace with valid Mermaid syntax: `Edge <-->|"Multiplexed Outbound Tunnel"| TunnelService` or `Edge == "Multiplexed Outbound Tunnel" ==> TunnelService`.
+
+---
+
+### 8. Missing Ingress Catch-All Rule in `config.yml` Snippet - Severity: Nit
+* **Reviewer Lens:** `egm-structural`
+* **Affected Scope:** Lines 200–203
+* **Discrepancy Description:** 
+  In Component 1, the `config.yml` ingress snippet lists only:
+  ```yaml
+  ingress:
+    - service: http://127.0.0.1:8000
+  ```
+  Cloudflare's `cloudflared` configuration validator mandates that all ingress rule blocks conclude with a catch-all rule (e.g. `- service: http_status:404`). Omitting this rule causes `cloudflared` to fail configuration validation on startup.
+* **Rationale & Recommendation:** 
+  Update the configuration snippet to append `- service: http_status:404` as the final ingress item.
+
+---
+
+### 9. Tautological Phrasing in Overview - Severity: Nit
 * **Reviewer Lens:** `egm-style`
-* **Affected Scope:** Lines 37, 41, 42, 111, 196, 293–317
-* **Discrepancy Description**: Uncalibrated absolute statements ("100% PC Independence", "Zero Offline Voice Degradation", "Seamless") and raw conversational wrappers (`Rejected by author:`, appeals to user authority) reduce technical rigor.
-* **Rationale & Recommendation**: Rephrase with objective, measurable technical statements ("Standalone PC-Independent Operation", "Offline Voice Processing", "Dynamic runtime mode switching"). Reformat rejection rationales as objective technical trade-offs.
+* **Affected Scope:** Line 13
+* **Discrepancy Description:** 
+  The sentence includes the phrase: *"local Wi-Fi local-area-network proximity"*, which contains redundant words (*"local Wi-Fi local-area-network"*).
+* **Rationale & Recommendation:** 
+  Simplify phrasing to: *"local Wi-Fi network proximity"* or *"home Wi-Fi proximity"*.
 
 ---
 
-### 13. Nits (Layout, Phrasing, Formatting) - Severity: Nit
-* **Visual Color Banding in `RGB_565`**: Use `Bitmap.Config.ARGB_8888` on Galaxy S24+ instead of `RGB_565` to avoid color banding on appliance dials and text.
-* **Divider Syntax Asymmetry**: Replace 80-character dashes with standard `---` Markdown dividers.
-* **Heading Label Uniformity**: Normalize subsection titles to avoid mixing filename parentheses with bare titles.
-* **Metadata Ordering**: Re-order header metadata to canonical `Status`, `Author`, `Date`.
-* **Wordiness**: Strip redundant phrasing ("handles all local processing on-device", "handling must be handled by").
+### 10. Ambiguous Attribution of WebSocket Close Code `1006` - Severity: Nit
+* **Reviewer Lens:** `egm-style`
+* **Affected Scope:** Lines 187, 252
+* **Discrepancy Description:** 
+  The document references *"e.g. mobile cell tower handover, code 1006"* without clarifying that RFC 6455 status code `1006` (Abnormal Closure) is an internal client-synthesized event emitted locally by OkHttp when the TCP socket drops abruptly without a clean closing handshake, rather than a frame sent by the server.
+* **Rationale & Recommendation:** 
+  Clarify in the text that `1006` is locally synthesized by OkHttp upon transport drop to prevent confusion for backend developers auditing server logs.

@@ -1,86 +1,116 @@
-# Stage 5: Initial Zoom Out Review Report
+# Goldfish Review Report: Stage 5 Initial Zoom Out
 
-**Target:** `docs/designs/backend_migration_to_android.md` (Lines 1–490)  
-**Standard:** `resources/document_standards/zoom-out-standard.md`  
-**Reviewers:** `egm-zoom-out` (Skeptical Architect), `egm-inventive-catalyst` (Inventive TRIZ Analyst)
-
----
+**Target:** `docs/designs/private_remote_cellular_connectivity.md` (`lines 1..304`)  
+**Target Deliverable:** `zoom_out_report.md`
 
 ## Reviewer Status
 
 | Reviewer | Status |
-| :--- | :--- |
+| --- | --- |
 | `egm-zoom-out` | completed |
 | `egm-inventive-catalyst` | completed |
+
+## Severity Breakdown
+- 🔴 **Blocker:** 3
+- 🟡 **Major:** 5
+- 🟢 **Nit:** 3
+- **Total Findings:** 11
 
 ---
 
 ## Prioritized Findings (Blockers -> Major -> Nits)
 
-### 1. Reverse-Engineering Google NotebookLM `batchexecute` RPCs on Android - Severity: Blocker
+### 1. Ephemeral Quick Tunnels vs Persistent Named Tunnels Destroys Usability on Reboot - Severity: Blocker
 * **Reviewer Lens:** `egm-zoom-out`
-* **Affected Scope:** Section 2.4 (Lines 256–268), Section 344 Items 10–13 (Lines 400–421), Goal G4 (Lines 40–42)
-* **Discrepancy Description**: Google NotebookLM provides no public developer API. In the PC backend, running NotebookLM relies on `notebooklm-py` with headless Playwright browser automation (`attempt_headless_reauth`) and persistent Chromium browser profiles to survive frequent Google session cookie invalidations and cellular IP shifts. Re-implementing a bare-bones `batchexecute` client on Android (`DirectMobileNotebookLMClient`) while spoofing Chrome Mobile user-agent in WebView creates an unrecoverable failure mode on cellular networks and violates Google authentication security policies.
-* **Rationale & Recommendation**: Acknowledge that unofficial NotebookLM integration requires a proxy/desktop environment with headless browser automation, or evaluate standard official cloud APIs (such as OpenAI Assistant/File Search or Gemini API with cached file context) for standalone mobile document Q&A.
+* **Affected Scope:** Lines 61–65, 198–204, 286–291 (Open Question 1 & Windows Host Automation)
+* **Discrepancy Description:** The RFC leaves the choice between Quick Tunnels and Named Tunnels as an open question (Question 1), while simultaneously specifying `cloudflared service install` and automated background launch. In Cloudflare's architecture, an ad-hoc quick tunnel (`cloudflared tunnel --url ...`) generates a dynamic, random subdomain on `*.trycloudflare.com` on every process start and reboot. Conversely, a persistent hostname requires an authenticated Cloudflare Named Tunnel associated with an account and domain/subdomain.
+* **Rationale & Recommendation:** If the PC reboots or the service restarts, a quick tunnel generates a new random URL. Because the target user is an older adult outside the home, requiring them or a caregiver to reconfigure the mobile app with a new URL on every host reboot breaks system autonomy. The RFC must decisively commit to an authenticated Cloudflare Zero Trust Free Named Tunnel (free for up to 50 users) with a stable, deterministic hostname (e.g. `*.cfargotunnel.com` or user domain), and document the one-time authentication (`cloudflared tunnel login`) in the PowerShell setup script.
 
 ---
 
-### 2. Reinventing Existing Core Interfaces and Transports - Severity: Major
+### 2. Windows Service Boot Lifecycle Incompatibility (SYSTEM Service vs User-Session FastAPI/Playwright) - Severity: Blocker
 * **Reviewer Lens:** `egm-zoom-out`
-* **Affected Scope:** Section 2.1 (Lines 195–216), Section 344 Items 3, 5, 6, 8, 9, 14 (Lines 359–399, 422–428)
-* **Discrepancy Description**: The design introduces a new set of interfaces and classes (`AssistantGateway`, `DirectCloudAssistantGateway`, `RemotePCAssistantGateway`, `MossLiveTransport`, `RemotePCMossTransport`) that duplicate already existing, fully functional abstractions in the codebase:
-  1. `LiveAssistant` (`com.visualassistant.app.chat.LiveAssistant`) already abstracts assistant turns, supports `notebookId`, and is wired to `ChatViewModel`.
-  2. `PhoneLiveAssistant` (`com.visualassistant.app.chat.PhoneLiveAssistant`) already implements HTTP communication with `127.0.0.1:8000`. `RemotePCAssistantGateway` is redundant.
-  3. `MossLiveTransport` (`com.visualassistant.app.mosslive.MossLiveTransport`) already exists with `sendCameraFrame`, `queuedBytes`, and `close(code, reason)`.
-  4. `OkHttpMossLiveTransport` already connects to `ws://127.0.0.1:8000/v1/realtime/moss-live`. `RemotePCMossTransport` is redundant.
-* **Rationale & Recommendation**: Reuse existing interfaces (`LiveAssistant` and `MossLiveTransport`). Implement `DirectCloudLiveAssistant` and `DirectMossLiveTransport` implementing these existing contracts, and retain `PhoneLiveAssistant` and `OkHttpMossLiveTransport` for workstation mode.
+* **Affected Scope:** Lines 43–44, 118–120, 196–197, 286–291 (Goal G5 & Phase 3)
+* **Discrepancy Description:** Goal G5 mandates launching the tunnel daemon alongside the FastAPI backend on system boot without active user desktop logins. The implementation plan details installing `cloudflared` as a Windows SYSTEM service (`cloudflared service install`), but provides no background service registration for the Python FastAPI backend or its Google NotebookLM Playwright dependency.
+* **Rationale & Recommendation:** If the PC reboots, `cloudflared` starts as a background service, but `uvicorn` and FastAPI remain unstarted until the user logs into their desktop and runs `Restart Backend.cmd`. During this window, `cloudflared` receives remote traffic on port 443, attempts to proxy to `127.0.0.1:8000`, and returns `HTTP 502 Bad Gateway`. Furthermore, NotebookLM requires access to the user profile's Playwright persistent browser profile (`storage_state.json`), which fails under `NT AUTHORITY\SYSTEM`. The RFC must define the service wrapper or Windows Task Scheduler task (configured to run whether the user is logged on or not, under the user account) to manage FastAPI alongside `cloudflared`.
 
 ---
 
-### 3. Over-Engineered Credential Ingestion & Flawed Key Scanner - Severity: Major
+### 3. Subnet Scanning Priority Inversion Inverting Home/Away Fallback - Severity: Blocker
 * **Reviewer Lens:** `egm-zoom-out`
-* **Affected Scope:** Section 2.6 (Lines 276–284), Section 344 Items 17, 18 (Lines 443–452)
-* **Discrepancy Description**: The proposal specifies four separate credential ingestion mechanisms: manual typing, clipboard paste, a Camera Key Scanner using Google ML Kit Latin OCR, and a desktop QR terminal sync script (`scripts/show_auth_qr.py`).
-  1. **Technical Defect**: Google ML Kit Latin OCR is a text recognition model; it cannot parse QR codes without a barcode scanning library.
-  2. **Dependency Bloat**: Since on-device book OCR is deprecated (Non-Goal NG1), retaining ML Kit Latin OCR (15–20 MB) solely to scan printed keys off screens is unnecessary gold-plating.
-* **Rationale & Recommendation**: Simplify credential entry to standard masked input fields with clipboard paste buttons. Drop `CameraKeyScanner.kt` and `scripts/show_auth_qr.py`, and remove `com.google.mlkit:text-recognition` from `build.gradle.kts`.
+* **Affected Scope:** Lines 80–84, 168–172, 174–180, 248–249 (CUJ 3 & Phase 1)
+* **Discrepancy Description:** CUJ 3 specifies seamless home/away fallback: probing USB loopback and local Wi-Fi first, and only falling back to the remote tunnel when disconnected. However, in `ServerScanner.kt`, Tier 2 evaluates `currentHost` (the configured remote tunnel domain) immediately after USB loopback (Tier 1) and *before* local subnet discovery (Tier 4). 
+* **Rationale & Recommendation:** Because a Cloudflare tunnel URL is globally routable over the internet, probing `https://<tunnel-host>/health` will succeed even when the phone is connected to home Wi-Fi. Under the proposed logic, Tier 2 will resolve the remote tunnel on home Wi-Fi, routing uncompressed audio and camera frames across the public internet to Cloudflare's WAN edge instead of using low-latency local LAN. The RFC must update `ServerScanner.kt` to reorder discovery or inspect the active network transport so local LAN is prioritized when on home Wi-Fi.
 
 ---
 
-### 4. Premature Over-Abstraction for Mode Routing - Severity: Major
-* **Reviewer Lens:** `egm-zoom-out`
-* **Affected Scope:** Section 1.1 Diagram & Section 2.1 (Lines 114–189, 195–216), Section 344 Item 14 (Lines 422–428)
-* **Discrepancy Description**: The design specifies `BackendModeRouter` to manage dynamic hot-swapping between `Direct*` and `Remote*` gateways in memory without restarting the application. Switching between Standalone and Workstation modes is an infrequent developer setting that does not warrant dynamic runtime hot-swapping or complex synchronization plumbing.
-* **Rationale & Recommendation**: Read the mode setting from `SecureCredentialStore` during application or ViewModel initialization, instantiate the corresponding implementation (`PhoneLiveAssistant` vs. `DirectCloudAssistant`), and require an app restart if the toggle changes.
-
----
-
-### 5. Half-Duplex Microphone Zeroing Breaks Full-Duplex Interruption (Barge-In) - Severity: Major
+### 4. Manual 64-Hex-Character Bearer Token & URL Entry Lacks Pairing Automation - Severity: Major
 * **Reviewer Lens:** `egm-inventive-catalyst`
-* **Affected Scope:** Section 2.5 (Lines 269–275) / CUJ 2 & CUJ 3
-* **Discrepancy Description**: Zeroing uplink PCM audio during speaker playback (plus 200ms reverberation decay) forces half-duplex walkie-talkie operation during loudspeaker playback, preventing the user from interrupting (barging in on) MOSS Live.
-* **Rationale & Recommendation**: Rely on hardware Acoustic Echo Cancellation (`AcousticEchoCanceler` on `VOICE_COMMUNICATION` session ID) natively supported on Galaxy S24+ hardware. If software suppression is retained as a secondary safeguard, use voice-activity energy thresholds or spectral ducking rather than hard binary zeroing.
+* **Affected Scope:** Lines 11–13, 44–45, 211–213, 301–302 (Overview, G6, and Verification)
+* **Discrepancy Description:** The design requires manually copying and typing a 256-bit (64 hex character) `API_BEARER_TOKEN` and remote tunnel URL into the Android app's Settings screen.
+* **Rationale & Recommendation:** Typing a 64-character cryptographic token and HTTPS URL on a mobile virtual keyboard is severely friction-heavy and error-prone, directly conflicting with the older adult user profile. Since `setup_remote_tunnel.ps1` runs on the host PC while the phone is often plugged into USB during initial setup, the script should offer:
+  1. Automated USB provisioning via `adb shell am broadcast` or writing directly to app SharedPreferences.
+  2. Terminal ASCII QR code generation (or opening a local pairing webpage) so the Android CameraX scanner can pair the app in one tap.
 
 ---
 
-### 6. Fixed 1500ms Camera Heartbeat Unnecessarily Burns Mobile Bandwidth and Thermal Headroom - Severity: Nit
+### 5. Cellular Bandwidth Exhaustion & Thermal Drain from Uncompressed Streaming - Severity: Major
 * **Reviewer Lens:** `egm-inventive-catalyst`
-* **Affected Scope:** Section 2.3 (Lines 246–248) & Section 3.2 (Lines 319–324)
-* **Discrepancy Description**: Continuously transmitting JPEG frames every 1.5 seconds consumes cellular bandwidth and CPU/GPU thermal headroom even during static visual scenes or purely auditory conversational turns.
-* **Rationale & Recommendation**: Support dynamic camera frame rate adaptation: 5000ms keepalive heartbeat during static scenes, bursting to 1000–1500ms upon scene change or visual query intent.
+* **Affected Scope:** Lines 27–28, 36–38, 158–161, 220–222 (The Problem & Protocol Spec)
+* **Discrepancy Description:** The protocol streams uncompressed 16 kHz mono PCM uplink (256 kbps), 48 kHz mono PCM downlink (768 kbps), and uncompressed 1500ms JPEG camera frames over cellular, consuming ~580 MiB/hour (~1.74 GB in a 3-hour outing).
+* **Rationale & Recommendation:** On typical older-adult cellular mobile data tiers (e.g. 5GB–10GB/month), a few outdoor walks will exhaust monthly data limits. Furthermore, transmitting continuous PCM over cellular keeps the phone modem in high-power Radio Resource Control (RRC) connected state, causing battery drain and thermal throttling. The RFC should incorporate:
+  1. Device-side WebRTC VAD gating on the uplink (suppressing audio transmission during silence).
+  2. Motion or turn-adaptive frame rate for camera streaming (pausing JPEG streaming when the scene is static and no visual query is active).
 
 ---
 
-### 7. Reconnection Latency Inconsistency Following 60-Second Quiescence Timeout - Severity: Nit
-* **Reviewer Lens:** `egm-inventive-catalyst`
-* **Affected Scope:** Section 2.3 (Lines 251–254) & CUJ 3 (Step 5)
-* **Discrepancy Description**: Establishing a new TLS 1.3 socket, WebSocket upgrade, and two-step handshake on cellular networks requires 300–800ms, conflicting with the advertised "<100ms" voice resumption guarantee when the 60-second timeout has elapsed.
-* **Rationale & Recommendation**: Trigger socket pre-warming upon completion of NotebookLM TTS readout, and play an earcon audio chime to mask network latency if a cold reconnection is needed.
-
----
-
-### 8. Altitude Drops & Implementation Weeds in Architecture Document - Severity: Nit
+### 6. Unmitigated Windows OS Sleep and Modern Standby Connection Severance - Severity: Major
 * **Reviewer Lens:** `egm-zoom-out`
-* **Affected Scope:** Section 2.2 (Lines 229–235), Section 2.3 (Lines 242–245, 252–253), Section 468 (Lines 471–472)
-* **Discrepancy Description**: The document includes low-level code snippets (Canvas drawing boilerplate, raw JSON strings, build commands) inside high-level architectural sections.
-* **Rationale & Recommendation**: Maintain architectural focus on component responsibilities, state transitions, and error recovery contracts, leaving line-by-line coding details to the implementation phase.
+* **Affected Scope:** Lines 11–13, 117–120, 233–236 (Architecture & Alternative D)
+* **Discrepancy Description:** The design relies on an "always-on Windows PC" to anchor backend intelligence. However, standard Windows 10/11 desktop and laptop installations default to Sleep or Modern Standby after 15–30 minutes of user inactivity.
+* **Rationale & Recommendation:** When Windows enters standby, the network adapter halts, FastAPI stops processing, and the Cloudflare tunnel severs. An older adult outside who initiates a voice session will encounter silent connection timeouts. The deployment script (`setup_remote_tunnel.ps1`) must audit or configure Windows AC power policy (`powercfg /change standby-timeout-ac 0`), and the mobile UI must display clear diagnostic messaging when the host computer is unreachable or asleep.
+
+---
+
+### 7. Network-Agnostic Probing Lacks Android Transport Awareness - Severity: Major
+* **Reviewer Lens:** `egm-inventive-catalyst`
+* **Affected Scope:** Lines 174–180, 249–250, 269–273 (Component 2 & Phase 1)
+* **Discrepancy Description:** `ServerScanner.kt` treats network interfaces agnostically, performing sequential socket timeouts and HTTP health checks regardless of whether the phone is connected via cellular data, Wi-Fi, or USB.
+* **Rationale & Recommendation:** Android's `ConnectivityManager` natively reports active transports (`TRANSPORT_CELLULAR`, `TRANSPORT_WIFI`). When on `TRANSPORT_CELLULAR`, attempting local subnet scanning (`192.168.x.x`) or USB loopback checks wastes radio energy and introduces latency. The RFC should specify transport-aware routing: when `TRANSPORT_CELLULAR` is active, route immediately to the remote tunnel; when `TRANSPORT_WIFI` is active, probe the local LAN first and fallback to remote.
+
+---
+
+### 8. Query Parameter Bearer Token Fallback Exposes Secrets in Edge Logs - Severity: Major
+* **Reviewer Lens:** `egm-zoom-out`
+* **Affected Scope:** Lines 156–157, 251–252 (WebSocket Protocol Spec & File Manifest)
+* **Discrepancy Description:** The RFC specifies passing `API_BEARER_TOKEN` via initial WebSocket upgrade header `Authorization: Bearer <token>` or connection query parameter `?token=<token>`.
+* **Rationale & Recommendation:** Passing tokens in query strings causes secrets to be logged in cleartext across Cloudflare edge logs, intermediate proxies, and server access logs. While browser WebSocket APIs historically required query params due to header limitations, native Android OkHttp (`OkHttpMossLiveTransport.kt`) fully supports custom headers during the HTTP upgrade request (`Request.Builder().header("Authorization", "Bearer ...")`). Query string authentication should be eliminated or restricted to local development debugging.
+
+---
+
+### 9. Premature 'Approved' Status on RFC with Unresolved Architectural Questions - Severity: Nit
+* **Reviewer Lens:** `egm-zoom-out`
+* **Affected Scope:** Lines 3–5, 60–65 (Header Metadata & Open Questions)
+* **Discrepancy Description:** Line 4 lists `Status: Approved`, while Section 6 explicitly lists critical unresolved questions (domain configuration vs named tunnels, cellular backoff tuning).
+* **Rationale & Recommendation:** An architecture document with open architectural forks should maintain `Status: In Review` or `Draft` until all structural questions are resolved and evaluated.
+
+---
+
+### 10. Fragile Hardcoded Path Assumption for Cloudflared Binary - Severity: Nit
+* **Reviewer Lens:** `egm-inventive-catalyst`
+* **Affected Scope:** Line 288 (Phase 3 Specification)
+* **Discrepancy Description:** Phase 3 states that the script will check for `cloudflared.exe` at `C:\cloudflared\cloudflared.exe` or system `PATH`.
+* **Rationale & Recommendation:** Winget installs binaries to `%LOCALAPPDATA%\Microsoft\WinGet\Packages` or `Program Files`. Checking an arbitrary root directory `C:\cloudflared\` is non-standard on Windows. The script should rely strictly on `Get-Command cloudflared.exe -ErrorAction SilentlyContinue` and append the resolved installation folder to the process PATH.
+
+---
+
+### 11. Missing Connection Read Timeout Tuning for NotebookLM Long-Polls over Cellular - Severity: Nit
+* **Reviewer Lens:** `egm-zoom-out`
+* **Affected Scope:** Lines 40–41, 152–153 (Goals & Network Protocol)
+* **Discrepancy Description:** NotebookLM queries have up to 45.0s long-poll latency. Cellular mobile data connections experiencing radio cell handovers often reset idle TCP sockets prematurely.
+* **Rationale & Recommendation:** Ensure `LiveAssistant.kt` and OkHttp clients configure a dedicated read timeout of at least 60 seconds specifically for `/v1/notebooklm/*` endpoints, coupled with transparent single-attempt retry on transient cellular socket resets.
+
+---
+
+## Conclusion & Next Steps
+The core premise of utilizing an outbound Cloudflare tunnel to eliminate port forwarding and VPN apps is sound and aligns well with the project invariants. However, resolving **Blocker 1 (Named Tunnel stability)**, **Blocker 2 (FastAPI boot service lifecycle)**, and **Blocker 3 (Scanner priority inversion)** is required before proceeding to implementation.

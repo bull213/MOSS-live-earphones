@@ -52,6 +52,27 @@ class BackendEndpointTest {
     }
 
     @Test
+    fun normalizesCloudflareTunnelUrlsWithoutAppendingPort8000() {
+        var stored: String? = null
+        val endpoint = BackendEndpoint(
+            getPreference = { stored },
+            setPreference = { stored = it },
+        )
+
+        // Even if entered without https scheme, remote domain normalizes to https:// without :8000
+        endpoint.host = "my-quick-tunnel.trycloudflare.com"
+        assertEquals("https://my-quick-tunnel.trycloudflare.com", endpoint.host)
+        assertEquals("https://my-quick-tunnel.trycloudflare.com/v1/assistant/turns", endpoint.httpUrl("v1/assistant/turns"))
+        assertEquals("wss://my-quick-tunnel.trycloudflare.com/v1/realtime/moss-live", endpoint.wsUrl("v1/realtime/moss-live"))
+
+        // When entered with https:// and trailing slash
+        endpoint.host = "https://dig-building-thirty-democratic.trycloudflare.com/"
+        assertEquals("https://dig-building-thirty-democratic.trycloudflare.com", endpoint.host)
+        assertEquals("https://dig-building-thirty-democratic.trycloudflare.com/health", endpoint.httpUrl("health"))
+        assertEquals("wss://dig-building-thirty-democratic.trycloudflare.com/v1/realtime/moss-live", endpoint.wsUrl("v1/realtime/moss-live"))
+    }
+
+    @Test
     fun resetToDefaultRestoresLoopback() {
         var stored: String? = "192.168.1.100:8000"
         var storedToken: String? = "secret-token"
@@ -95,6 +116,11 @@ class BackendEndpointTest {
         endpoint.host = "https://my-desktop.tail12345.ts.net"
         assertEquals(true, endpoint.isRemoteConfigured())
         assertEquals(true, endpoint.isTailscale())
+
+        // Cloudflare Tunnel
+        endpoint.host = "test-domain.trycloudflare.com"
+        assertEquals(true, endpoint.isRemoteConfigured())
+        assertEquals(false, endpoint.isTailscale())
 
         // Arbitrary domain
         endpoint.host = "assistant.example.com"
