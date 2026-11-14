@@ -11,11 +11,22 @@ Write-Host "==========================================================" -Foregro
 Write-Host "   Visual Assistant 24/7 Server Initial Setup" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 1. Virtual environment setup
+# 1. Python environment validation & venv setup
+$pythonCmd = Get-Command "python.exe" -ErrorAction SilentlyContinue
+if (-not $pythonCmd) {
+    $pythonCmd = Get-Command "py.exe" -ErrorAction SilentlyContinue
+}
+if (-not $pythonCmd) {
+    Write-Host "[ERROR] Python was not found in PATH." -ForegroundColor Red
+    Write-Host "Please install Python 3.11 - 3.13 via winget or python.org (ensure 'Add Python to PATH' is checked):" -ForegroundColor Yellow
+    Write-Host "   winget install --id Python.Python.3.13 -e --source winget" -ForegroundColor White
+    exit 1
+}
+
 $pythonExe = Join-Path $repoRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $pythonExe)) {
     Write-Host "`n[1/5] Creating Python virtual environment in .venv..." -ForegroundColor Cyan
-    python -m venv .venv
+    & $pythonCmd.Source -m venv .venv
 }
 Write-Host "  -> Python environment: $pythonExe" -ForegroundColor Green
 
